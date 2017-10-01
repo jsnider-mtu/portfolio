@@ -5,19 +5,33 @@
 ## into this.
 
 ## The basics are that there is a root, and each level under root is
-## successively indented by three characters, made up of pipes (|) and
-## spaces.
+## successively indented by three characters, made up of pipes (|),
+## spaces ( ), and dashes (-).
+
+## ASSUMPTIONS
+# The directory names start with a character in the POSIX word character
+# set.
 
 ## BUGS (- = closed; o = open)
 # - Current working directory needs to be known before we start it seems
 #    The name given to mkdir gets a leading slash somehow, ./ in front
 #    isn't the most elegant solution but it works.
-# o The append to the array may not be working correctly
+# - The append to the array may not be working correctly
+#    Believe it's the pattern ^[\| -]\{<\d>,\}[a-zA-Z0-9_]
+#     Turns out { and } shouldn't be escaped... I feel like I used to do
+#     that a lot... check tldp again, still says to do that
 # - Very first test (for root) is not working, no idea why.
 #    This is the test that is failing: [[ root =~ ^\w ]]
 #     Bash v4 doesn't do \w apparently, answer is
 #     [[ root =~ ^[a-zA-Z0-9_] ]]
-# o The names are getting appended to the array with the leading |--
+# - The names are getting appended to the array with the leading |--
+#    Lots of $line in mkdir and appends that should have been $name
+# - The second pattern is a more strict version of pattern 1 so pattern
+#   1 is matched when I really meant to match pattern 2
+#    Fixed this by just reversing the order of the check. Should rename
+#    variables too
+# - Only works for first layer of depth
+#    Forgot to increment magIndent.... slightly important I suppose
 
 # Global variable $magIndent measures indentation level (magnitude) of
 # the line.
@@ -29,21 +43,21 @@ while read line
 do
   # Before we start let's grab just the dirName from the line
   name=`echo $line|cut -d'-' -f3`
-  echo "DEBUG: name = $name"
+#  echo "DEBUG: name = $name"
 
   # Scratch that, do this for everyone but root
   if [[ -z $name ]]; then
     name=$line
-    echo "DEBUG: name = $name"
+#    echo "DEBUG: name = $name"
   fi
 
   # test if this is root; make first dir
   if [[ $line =~ ^[a-zA-Z0-9_] ]]; then
     # Need a variable for tracking the last name used in a previous
     # magIndent. Root gets 0, append on each increment.
-    echo "DEBUG: This is root, sweet"
+#    echo "DEBUG: This is root, sweet"
     indentNames=($name)
-    mkdir ./$name
+    mkdir ./$name 2>/dev/null
     magIndent=1
     continue
   fi
@@ -59,7 +73,7 @@ do
   # If it decreases then we'll need a way to determine
   # current indent level and then it should be smooth sailing.
   # To do this we're going to count how many characters exist before
-  # the first \w.
+  # the first [a-zA-Z0-9_].
 
   # Get value of character count for current magIndent (update: awful
   # name choice in retrospect)
@@ -68,33 +82,35 @@ do
   # Get value of incremented indent
   incIndent=$(($indent+3))
 
-  # Matches test, so sub of prev indent's name
   # Turns out the right side of [[ =~ ]] needs to actually be a regex
   # so no variable expansion
-  pattern1="^[| -]\{${indent},\}\w"
-  echo "DEBUG: pattern1 = $pattern1"
-  pattern2="^[| -]\{${incIndent},\}\w"
-  echo "DEBUG: pattern2 = $pattern2"
-  if [[ $line =~ $pattern1 ]]; then
+  pattern1="^[| -]{${indent},}[a-zA-Z0-9_]"
+#  echo "DEBUG: pattern1 = $pattern1"
+  pattern2="^[| -]{${incIndent},}[a-zA-Z0-9_]"
+#  echo "DEBUG: pattern2 = $pattern2"
+ 
+  # Doesn't match, test for increment
+  if [[ $line =~ $pattern2 ]]; then
+#    echo "DEBUG: pattern2 is evaluated to true"
+    magIndent=$(($magIndent+1))
+    path=`echo ${indentNames[@]:0:$magIndent}|tr ' ' '/'`
+#    echo "DEBUG: path = $path"
+    mkdir ./$path/$name 2>/dev/null
+    indentNames[$magIndent]=$name
+
+  # Matches test, so sub of prev indent's name
+  elif [[ $line =~ $pattern1 ]]; then
     # mkdir ./<path-to-prev-indent>/$line
     # need to create <path-to-prev-indent>; didn't know you could use
     # a variable in another's interpolation, nifty
-    echo "DEBUG: pattern1 is evaluated to true"
+#    echo "DEBUG: pattern1 is evaluated to true"
     path=`echo ${indentNames[@]:0:$magIndent}|tr ' ' '/'`
-    echo "DEBUG: path = $path"
-    mkdir ./$path/$line
-    indentNames[${magIndent}]=$line
-
-  # Doesn't match, test for increment
-  elif [[ $line =~ $pattern2 ]]; then
-    echo "DEBUG: pattern2 is evaluated to true"
-    path=`echo ${indentNames[@]:0:$(($magIndent+1))}|tr ' ' '/'`
-    echo "DEBUG: path = $path"
-    mkdir ./$path/$line
-    indentNames[$(($magIndent+1))]=$line
+#    echo "DEBUG: path = $path"
+    mkdir ./$path/$name 2>/dev/null
+    indentNames[${magIndent}]=$name
 
   # Not so scary, grab number of characters before the first
-  # \w, then divide by 3 for index in array.
+  # [a-zA-Z0-9_], then divide by 3 for index in array.
   # To do this we'll cut the string in 3 with the delimiter -
   # The answer is the length of the first string + 2
   else
@@ -102,11 +118,11 @@ do
     indent=$((${#firstCut}+2))
     magIndent=$(($indent/3))
     path=`echo ${indentNames[@]:0:$magIndent}|tr ' ' '/'`
-    echo "DEBUG: path = $path"
-    mkdir ./$path/$line
-    indentNames[${magIndent}]=$line
+#    echo "DEBUG: path = $path"
+    mkdir ./$path/$name 2>/dev/null
+    indentNames[${magIndent}]=$name
   fi
+done < mkDirStruct.template
 
-  # DEBUG -- What did we make?
-  tree ${indentNames[0]}
-done < ~/template
+# DEBUG -- What did we make?
+tree ${indentNames[0]}
