@@ -8,11 +8,16 @@
 ## successively indented by three characters, made up of pipes (|) and
 ## spaces.
 
-## BUGS
-# Current working directory needs to be known before we start it seems
-#  The name given to mkdir gets a leading slash somehow, ./ in front
-#  isn't the most elegant solution but it works.
-
+## BUGS (- = closed; o = open)
+# - Current working directory needs to be known before we start it seems
+#    The name given to mkdir gets a leading slash somehow, ./ in front
+#    isn't the most elegant solution but it works.
+# o The append to the array may not be working correctly
+# - Very first test (for root) is not working, no idea why.
+#    This is the test that is failing: [[ root =~ ^\w ]]
+#     Bash v4 doesn't do \w apparently, answer is
+#     [[ root =~ ^[a-zA-Z0-9_] ]]
+# o The names are getting appended to the array with the leading |--
 
 # Global variable $magIndent measures indentation level (magnitude) of
 # the line.
@@ -24,19 +29,23 @@ while read line
 do
   # Before we start let's grab just the dirName from the line
   name=`echo $line|cut -d'-' -f3`
+  echo "DEBUG: name = $name"
 
   # Scratch that, do this for everyone but root
   if [[ -z $name ]]; then
     name=$line
+    echo "DEBUG: name = $name"
   fi
 
   # test if this is root; make first dir
-  if [[ $line =~ ^\w ]]; then
+  if [[ $line =~ ^[a-zA-Z0-9_] ]]; then
     # Need a variable for tracking the last name used in a previous
     # magIndent. Root gets 0, append on each increment.
+    echo "DEBUG: This is root, sweet"
     indentNames=($name)
     mkdir ./$name
     magIndent=1
+    continue
   fi
 
   # Test number of indentations
@@ -63,11 +72,14 @@ do
   # Turns out the right side of [[ =~ ]] needs to actually be a regex
   # so no variable expansion
   pattern1="^[| -]\{${indent},\}\w"
+  echo "DEBUG: pattern1 = $pattern1"
   pattern2="^[| -]\{${incIndent},\}\w"
+  echo "DEBUG: pattern2 = $pattern2"
   if [[ $line =~ $pattern1 ]]; then
     # mkdir ./<path-to-prev-indent>/$line
     # need to create <path-to-prev-indent>; didn't know you could use
     # a variable in another's interpolation, nifty
+    echo "DEBUG: pattern1 is evaluated to true"
     path=`echo ${indentNames[@]:0:$magIndent}|tr ' ' '/'`
     echo "DEBUG: path = $path"
     mkdir ./$path/$line
@@ -75,6 +87,7 @@ do
 
   # Doesn't match, test for increment
   elif [[ $line =~ $pattern2 ]]; then
+    echo "DEBUG: pattern2 is evaluated to true"
     path=`echo ${indentNames[@]:0:$(($magIndent+1))}|tr ' ' '/'`
     echo "DEBUG: path = $path"
     mkdir ./$path/$line
