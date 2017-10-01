@@ -1,5 +1,9 @@
 #!/bin/bash
 
+## State: Doesn't actually work yet, but does make _something_
+## that's headed in the right direction
+
+
 ## Generate a directory structure using a template like the output of
 ## tree. Would be cool to add Unicode support for piping tree directly
 ## into this.
@@ -126,3 +130,4 @@ done < mkDirStruct.template
 
 # DEBUG -- What did we make?
 tree ${indentNames[0]}
+rm -r ${indentNames[0]}
