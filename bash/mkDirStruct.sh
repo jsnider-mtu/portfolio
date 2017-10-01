@@ -23,7 +23,7 @@
 # - The append to the array may not be working correctly
 #    Believe it's the pattern ^[\| -]\{<\d>,\}[a-zA-Z0-9_]
 #     Turns out { and } shouldn't be escaped... I feel like I used to do
-#     that a lot... check tldp again, still says to do that
+#     that a lot... checked tldp again, still says to do that
 # - Very first test (for root) is not working, no idea why.
 #    This is the test that is failing: [[ root =~ ^\w ]]
 #     Bash v4 doesn't do \w apparently, answer is
@@ -93,7 +93,7 @@ do
   pattern2="^[| -]{${incIndent},}[a-zA-Z0-9_]"
 #  echo "DEBUG: pattern2 = $pattern2"
  
-  # Doesn't match, test for increment
+  # Test for increment
   if [[ $line =~ $pattern2 ]]; then
 #    echo "DEBUG: pattern2 is evaluated to true"
     magIndent=$(($magIndent+1))
@@ -102,6 +102,7 @@ do
     mkdir ./$path/$name 2>/dev/null
     indentNames[$magIndent]=$name
 
+  # Test for sibling
   # Matches test, so sub of prev indent's name
   elif [[ $line =~ $pattern1 ]]; then
     # mkdir ./<path-to-prev-indent>/$line
@@ -126,7 +127,7 @@ do
     mkdir ./$path/$name 2>/dev/null
     indentNames[${magIndent}]=$name
   fi
-done < mkDirStruct.template
+done < mkDirStruct.template.v2
 
 # DEBUG -- What did we make?
 tree ${indentNames[0]}
