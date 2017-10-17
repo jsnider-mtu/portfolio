@@ -12,23 +12,23 @@ if len(sys.argv[1:]) != 2:
     print(usage)
     sys.exit(1)
 else:
-    arg1 = ast.literal_eval(sys.argv[1])
+    arg1 = ast.literal_eval(sys.argv[1])    # Sanitize your inputs, please.
     arg2 = ast.literal_eval(sys.argv[2])
     if not isinstance(arg1, set) or not isinstance(arg2, int):
         print('One of the arguments is not of the correct type.\nEnsure you '+\
               'are using curly brackets {} for the set.')
         sys.exit(2)
 
-n = arg2
-seth = list(arg1)
-seth.sort()
-lsb = n - 1
-l = [min(seth)] * n
-turns = len(seth) ** n
-cycle = 0
+n = arg2                    # n is the length of the output list
+seth = list(arg1)           # `Set h' for some reason..
+seth.sort()                 # Let's get them in a reasonable order
+lsb = n - 1                 # LSB is the index of the last element
+l = [min(seth)] * n         # Instantiate the output list with first element
+turns = len(seth) ** n      # Math fun: will need to iterate the list this
+cycle = 0                   #           many times
 for x in range(turns):
-    cur = x % len(seth)
-    if cur == 0 and x != 0:
+    cur = x % len(seth)         # cur is index of inner iterations
+    if cur == 0 and x != 0:     # not sure about the rest of this yet
         cycle += 1
         if cycle % len(seth) == 0:
             if n == 3:
