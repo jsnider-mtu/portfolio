@@ -1,0 +1,26 @@
+---
+# A playbook for upgrading or downgrading Tomcat web apps
+# Typically done in batches for a rolling restart
+- hosts: batch
+  sudo: yes
+
+  tasks:
+
+    - name: Stop Tomcat 7 
+      action: service name=tomcat7 state=stopped
+      ignore_errors: yes
+
+    - name: Kill exploded wars
+      action: file name=/var/lib/tomcat7/work/app state=absent
+      ignore_errors: yes
+
+    - name: Kill war
+      action: file name=/var/lib/tomcat7/webapps/app.war state=absent
+      ignore_errors: yes
+
+    - name: Copy new war
+      action: copy src=/usr/local/organization/current-versions/app.war dest=/var/lib/tomcat7/webapps/app.war
+
+    - name: Start Tomcat 7
+      action: service name=tomcat7 state=started
+      ignore_errors: yes

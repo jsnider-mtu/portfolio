@@ -1,0 +1,34 @@
+---
+# A playbook for creating a new database user on multiple machines
+- hosts: ingest
+  become: yes
+  become_user: root
+  tasks:
+  - name: Create new user
+    postgresql_user:
+      name: example
+      password: # secret, not included in portfolio
+    become_user: postgres
+
+  - name: Add line to pg_hba.conf
+    lineinfile:
+      dest: /etc/postgresql/9.1/main/pg_hba.conf
+      line: 'host all example 10.10.50.0/24 md5'
+      insertafter: EOF
+
+  - name: Add line to pg_hba.conf
+    lineinfile:
+      dest: /etc/postgresql/9.1/main/pg_hba.conf
+      line: 'host all example 10.93.0.0/16 md5'
+      insertafter: EOF
+
+  - name: Ensure listening address *
+    lineinfile:
+      dest: /etc/postgresql/9.1/main/postgresql.conf
+      line: "listen_addresses = '*'          # what IP address(es) to listen on;"
+      regexp: 'listen_addresses'
+
+  - name: Restart postgresql configuration
+    service:
+      name: postgresql
+      state: restarted

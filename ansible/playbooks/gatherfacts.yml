@@ -1,0 +1,10 @@
+---
+- hosts: all:!mac
+
+  tasks:
+    - set_fact:
+        disk_size: "{{ (item.value.sectors | int) * (item.value.sectorsize | int) }}"
+      with_dict: "{{ ansible_devices }}"
+      register: disk_sizes
+
+    - debug: msg="{{ inventory_hostname }} has {{ ansible_processor_vcpus }} processors, {{ ansible_memtotal_mb }} MB memoy, and {{ disk_sizes.results | map(attribute='ansible_facts.disk_size') | map('int') | sum(start=0) / 1073741824 }} GB storage"

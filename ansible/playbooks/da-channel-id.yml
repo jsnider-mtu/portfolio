@@ -1,0 +1,19 @@
+---
+- hosts: da
+  vars:
+    channelID: 123456789
+  sudo: yes
+
+  tasks:
+    - name: Stop distribution-adapter
+      service: name=distribution-adapter state=stopped
+
+    - name: Append channel ID to properties
+      lineinfile:
+        dest: /usr/local/organization/conf/distribution-adapter.properties
+        regexp: '^(distribution.adapter.supported.channelIds(?!.*\b{{ channelID }}\b).*)$'
+        backrefs: yes
+        line: '\1,{{ channelID }}'
+        
+    - name: Start distribution-adapter
+      service: name=distribution-adapter state=started

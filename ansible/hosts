@@ -1,0 +1,10 @@
+# Example hosts file
+[main]
+test1
+test2
+www1
+www2
+
+[web]
+www1
+www2

@@ -1,0 +1,6 @@
+---
+- hosts: mac
+
+  tasks:
+    - name: Collect and print facts
+      debug: msg="{{ inventory_hostname }} has {{ ansible_processor_cores }} processors, {{ ansible_memtotal_mb }} MB memoy, and 465Gi storage"
