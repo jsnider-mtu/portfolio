@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% block content %}
+{% if current_user.is_authenticated %}
+<div class="container">
+  {% if error != "" %}
+  <h1 style="color: red;">ERROR</h1>
+  <h3>{{ error }}</h3><br>
+  {% endif %}
+  <h2 style="color: orange;">Warning: time is in UTC, NOT EST</h2>
+  <h1>AWS ASG Schedule</h1>
+  <br>This tool will allow you to preschedule events that will automatically scale the jsnider-mtu-asg Auto Scaling Group.
+  <br>An instance will start at the time you submit, and then automatically be scaled back down at 3PM Eastern (unless traffic keeps it scaled up from CPU metrics).
+  <br>Tip: You can overwrite an already scheduled event by using the same Event Name.  If you need to delete an event, please contact SRE.
+  <h2>Current Schedule:</h2>
+  {% for item in data %}
+  {% if item['ScheduledActionName'] != "asg-scale-back-cron" %}
+  <h3>{{ item['ScheduledActionName'] }}</h3>
+  {{ item['StartTime'] }} UTC
+  {% endif %}
+  {% endfor %}
+  <br><br>
+  ------------------------------------------------------------------
+  <h2>Submit New Event:</h2>
+  <form method="post">
+    <label for="title"></label>
+    <br>
+    Event Name:
+    <input type="text" name="eventName"
+           placeholder=""
+           value="{{ request.form['eventName'] }}"></input>
+    <br><br>
+    Desired Capacity:
+    <input type="number" name="desiredCapacity"
+           placeholder="" min="2" max="4"
+           value="{{ request.form['desiredCapacity'] }}"></input>
+    <br><br>
+    <input type="date" name="date"
+           placeholder="Message title"
+           value="{{ request.form['date'] }}"></input>
+    <input type="time" name="time"
+           placeholder="Message title"
+           value="{{ request.form['time'] }}"></input> UTC
+    <br>
+    <button type="submit">Submit</button>
+    <br>
+    <br>
+    Submitted Event Name: {{ submittedEventName }}
+    <br>
+    Submitted Time: {{ submittedDateTime }}
+  </form>
+</div>
+{% else %}
+<p class="lead">Click the link below to login:</p>
+<ul>
+  {% for idp in idp_dict.keys() %}
+  <li><h5><a href="/saml/login/{{idp}}">Login via {{idp}}</a></h5></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
