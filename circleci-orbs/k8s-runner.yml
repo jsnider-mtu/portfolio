@@ -1,0 +1,381 @@
+version: 2.1
+description: "K8s Runner Orb"
+
+commands:
+  setup:
+    parameters:
+      image:
+        type: string
+        default: cimg/base:2020.10
+        description: "The docker image to use for the job"
+      working_directory:
+        type: string
+        default: \~/project
+        description: Working directory for commands
+      checkout:
+        type: boolean
+        default: false
+        description: Whether to checkout the repo
+      sidecars:
+        type: string
+        default: "sidecars: {}"
+        description: Sidecar containers
+      envs:
+        type: string
+        default: "envs: {}"
+        description: Environment variables in agent container
+      cpu_limit:
+        default: "1"
+        type: enum
+        enum: ["1", "2", "3"]
+        description: Number of CPUs for K8s resource limits
+      namespace:
+        type: string
+        default: k8s-runners
+        description: Namespace where pod will run
+    steps:
+      - run:
+          name: Ensure kubectl is installed
+          command: |
+            if [ -z "$(which kubectl)" ]; then
+              echo -e "Did not find kubectl\nInstalling kubectl not implemented yet; exiting"
+              exit 1
+            else
+              echo "Found kubectl"
+            fi
+      - checkout:
+          path: /tmp/checkoutdir
+      - run:
+          name: Ensure yq is installed
+          command: |
+            if [ -z "$(which yq)" ]; then
+              if [ "$EUID" != "0" ]; then
+                USESUDO='sudo'
+              else
+                USESUDO=''
+              fi
+              $USESUDO curl -sLo /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/2.4.0/yq_linux_amd64 && $USESUDO chmod +x /usr/local/bin/yq
+            fi
+      - run:
+          name: Ensure bash commands are escaped properly
+          command: |
+            ORBNAME=$(yq r /tmp/checkoutdir/.circleci/config.yml orbs | grep onprem-agent | awk '{print $1}' | tr -d ':')
+            yq r /tmp/checkoutdir/.circleci/config.yml "jobs.*.steps[*].${ORBNAME}/bash.command" > /tmp/tmpyq
+            yq r /tmp/checkoutdir/.circleci/config.yml "jobs.*.steps[*].${ORBNAME}/sh.command" >> /tmp/tmpyq
+            while read CMDSTR; do
+              if [[ "$CMDSTR" == *\'* ]]; then
+                if [[ "$CMDSTR" != *\'\\\'\'* ]] && [[ "$CMDSTR" != *\'\"\'\"\'* ]]; then
+                  echo -e "Found an improperly escaped single quote in a command string:\n\n$CMDSTR\n"
+                  echo "Please escape all single quotes using either '\\'' or '\"'\"'"
+                  exit 1
+                else
+                  if [[ "$CMDSTR" =~ [^\\\'\"]\'[^\\\'\"] ]] || [[ "$CMDSTR" =~ [^\\]\'\' ]] || [[ "$CMDSTR" =~ [^\\\'\"]\'$ ]] || [[ "$CMDSTR" =~ [^\']\\\'[^\'] ]] || [[ "$CMDSTR" =~ \\\'$ ]] || [[ "$CMDSTR" =~ \'\\\'[^\'] ]] || [[ "$CMDSTR" =~ [^\']\\\'\' ]] || [[ "$CMDSTR" =~ [^\']\"\'\"[^\'] ]] || [[ "$CMDSTR" =~ \'\"$ ]] || [[ "$CMDSTR" =~ \"\'\"$ ]] || [[ "$CMDSTR" =~ [^\']\"\'$ ]] || [[ "$CMDSTR" =~ [^\"]\'\"\'$ ]] || [[ "$CMDSTR" =~ [^\']\"\'\"\' ]] || [[ "$CMDSTR" =~ \'\"\'\"[^\'] ]] || [[ "$CMDSTR" =~ [^\']\"\'\"\'[^\"] ]] || [[ "$CMDSTR" =~ [^\"]\'\"\'\"[^\'] ]]; then
+                    echo -e "Found an improperly escaped single quote in a command string:\n\n$CMDSTR\n"
+                    echo "Please escape all single quotes using either '\\'' or '\"'\"'"
+                    exit 1
+                  else
+                    echo Valid
+                  fi
+                fi
+              fi
+            done < <(cat /tmp/tmpyq | sed 's/\\/\\\\/g')
+      - run:
+          name: Set the pod name
+          command: echo "export POD_NAME=${CIRCLE_PROJECT_REPONAME}-circleci-job-${CIRCLE_BUILD_NUM}" >> $BASH_ENV
+      - run:
+          name: Install helm
+          command: curl -fsSL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+      - run:
+          name: Generate helm chart
+          command: |
+            mkdir -p charts/runner/templates
+            cat \<<EOF >charts/runner/Chart.yaml
+            name: k8s-runner
+            apiVersion: v1
+            description: K8s Runner Helm Chart
+            version: 0.0.1
+            EOF
+            cat \<<EOF >charts/agent/templates/pod.yaml
+            {{- \$root := . -}}
+            ---
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              name: ${POD_NAME}
+              namespace: << parameters.namespace >>
+            spec:
+              containers:
+              - name: runner
+                image: << parameters.image >>
+                command: ['cat']
+                tty: true
+            {{- if .Values.envs }}
+                env:
+            {{ toYaml .Values.envs | indent 4 }}
+            {{- end }}
+                resources:
+                  limits:
+                    cpu: << parameters.cpu_limit >>
+                    memory: 8192Mi
+                  requests:
+                    cpu: << parameters.cpu_limit >>
+                    memory: 2048Mi
+            {{- range \$sidecar := .Values.sidecars }}
+              - name: {{ \$sidecar.name }}
+                image: {{ \$sidecar.image }}
+            {{- if \$sidecar.envs }}
+                env:
+            {{ toYaml \$sidecar.envs | indent 4 }}
+            {{- end }}
+                resources:
+                  limits:
+                    cpu: << parameters.cpu_limit >>
+                    memory: 8192Mi
+                  requests:
+                    cpu: << parameters.cpu_limit >>
+                    memory: 2048Mi
+            {{- end }}
+            EOF
+            echo -e "<< parameters.sidecars >>" >charts/agent/values.yaml
+            echo -e "<< parameters.envs >>" >>charts/agent/values.yaml
+            cat charts/agent/templates/pod.yaml
+      - run:
+          name: Set the kubeconfig path
+          command: mkdir $HOME/.kube && echo 'export KUBECONFIG=$HOME/.kube/kubeconfig' >> $BASH_ENV
+      - run:
+          name: Set AWS keys
+          command: echo 'export AWS_ACCESS_KEY_ID=$PROD_ACCESS_KEY_ID' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=$PROD_SECRET_ACCESS_KEY' >> $BASH_ENV
+      - run:
+          name: Get the kubeconfig file
+          command: ~/bin/aws eks --region $AWS_REGION update-kubeconfig --name jsnider-mtu-cluster --kubeconfig $HOME/.kube/kubeconfig
+      - run:
+          name: Set namespace to << parameters.namespace >>
+          command: kubectl config set-context --current --namespace=<< parameters.namespace >>
+      - run:
+          name: Install runner helm chart
+          command: helm upgrade --install ${POD_NAME} ./charts/runner
+      - run:
+          name: Wait for builder pod
+          command: while [[ $(kubectl get pods ${POD_NAME} -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}') != "True" ]]; do echo "waiting for pod" && sleep 1; done
+      - run:
+          name: Create $BASH_ENV
+          command: kubectl exec -it ${POD_NAME} -c runner -- sh -c "touch $BASH_ENV && echo -e \"export BASH_ENV=$BASH_ENV\n$(cat $BASH_ENV | sed 's/"/\\"/g')\" >> $BASH_ENV"
+      - run:
+          name: Persist working directory
+          command: echo 'export WORK_DIR=<< parameters.working_directory >>' >> $BASH_ENV
+      - run:
+          name: Create working_directory
+          command: kubectl exec -it ${POD_NAME} -c runner -- sh -c "set +e; mkdir -p $WORK_DIR; exit 0"
+      - when:
+          condition: << parameters.checkout >>
+          steps:
+            - run:
+                name: Ensure SSH and Git are installed
+                command: |
+                  kubectl exec -it ${POD_NAME} -c runner -- sh -c "if [ \"\$(id -u)\" != \"0\" ]; then \
+                  export USESUDO='sudo'; \
+                  else export USESUDO=''; fi; \
+                  if [ ! -z \"\$(which apt-get)\" ]; then \
+                  \$USESUDO apt-get update && apt-get install -y openssh-client git; \
+                  elif [ ! -z \"\$(which apk)\" ]; then \
+                  \$USESUDO apk add --update openssh-client git; \
+                  elif [ ! -z \"\$(which yum)\" ]; then \
+                  \$USESUDO yum -y install openssh-clients git; fi"
+            - run:
+                name: Copy SSH Configs to Builder Pod
+                command: |
+                  REMOTEHOME=`echo "$(kubectl exec -it ${POD_NAME} -c runner -- sh -c "echo \\\$HOME")" | tr -d '\r' | sed 's/\^@//g'`
+                  echo "$REMOTEHOME/.ssh"
+                  kubectl cp ~/.ssh ${POD_NAME}:${REMOTEHOME}/.ssh -c runner
+            - run:
+                name: Add known hosts
+                command: kubectl exec -it ${POD_NAME} -c runner -- sh -c "ssh-keyscan bitbucket.org >> \$HOME/.ssh/known_hosts"
+            - run:
+                name: Change owner of .ssh
+                command: kubectl exec -it ${POD_NAME} -c runner -- sh -c "chown -R \$(id -u):\$(id -g) \$HOME/.ssh"
+            - run:
+                name: Fix path in .ssh/config
+                command: kubectl exec -it ${POD_NAME} -c runner -- sh -c "if [ -f \$HOME/.ssh/config ]; then sed -i \"s,/[-_/a-zA-Z\.]\+/.ssh/id_rsa,\$HOME/.ssh/id_rsa,\" \$HOME/.ssh/config; fi"
+            - run:
+                name: Clone Project to Builder Pod
+                command: kubectl exec -it ${POD_NAME} -c runner -- sh -c "git clone ${CIRCLE_REPOSITORY_URL} ${WORK_DIR}"
+            - run:
+                name: Checkout Branch
+                command: |
+                  if [ -z "$CIRCLE_BRANCH" ]; then
+                    kubectl exec -it ${POD_NAME} -c runner -- sh -c "cd ${WORK_DIR} && git checkout -q \"$CIRCLE_TAG\""
+                  else
+                    kubectl exec -it ${POD_NAME} -c runner -- sh -c "cd ${WORK_DIR} && git checkout -q -B \"$CIRCLE_BRANCH\" && git reset --hard \"$CIRCLE_SHA1\""
+                  fi
+      - run:
+          name: Set SETUP_RAN env var
+          command: echo 'export SETUP_RAN=true' >> $BASH_ENV
+  assumerole:
+    parameters:
+      role-arn:
+        type: string
+        description: Role to be assumed
+    steps:
+      - run:
+          name: Assume an AWS role
+          command: |
+            if [ -z "$SETUP_RAN" ]; then
+              echo "Must run setup step first; exiting"
+              exit 1
+            fi
+            kubectl exec -it ${POD_NAME} -c runner -- sh -c "temp_role=\$(aws sts assume-role --role-arn \"<< parameters.role-arn >>\" --role-session-name AWSCLI-Session); \
+            echo \"export AWS_ACCESS_KEY_ID=\$(echo \$temp_role | jq -r .Credentials.AccessKeyId)\" >> $BASH_ENV; \
+            echo \"export AWS_SECRET_ACCESS_KEY=\$(echo \$temp_role | jq -r .Credentials.SecretAccessKey)\" >> $BASH_ENV; \
+            echo \"export AWS_SESSION_TOKEN=\$(echo \$temp_role | jq -r .Credentials.SessionToken)\" >> $BASH_ENV"
+  sh:
+    parameters:
+      cmdname:
+        type: string
+        default: Run command
+        description: Name of run step
+      command:
+        type: string
+        description: The command to run in bash on the pod
+      timeout:
+        type: string
+        default: "10m"
+        description: no_output_timeout
+      when:
+        type: enum
+        enum:
+        - "nul"
+        - "always"
+        - "on_failure"
+        - "on_success"
+        default: "nul"
+        description: when parameter
+    steps:
+      - when:
+          condition:
+            equal: [ "nul", << parameters.when >> ]
+          steps:
+            - run:
+                no_output_timeout: << parameters.timeout >>
+                name: << parameters.cmdname >>
+                command: |
+                  if [ -z "$SETUP_RAN" ]; then
+                    echo "Must run setup step first; exiting"
+                    exit 1
+                  fi
+                  echo '<< parameters.command >>' > /tmp/tmpcmd
+                  kubectl cp /tmp/tmpcmd ${POD_NAME}:/tmp/tmpcmd -c runner
+                  kubectl exec -it ${POD_NAME} -c runner -- sh -c "cd $WORK_DIR && . $BASH_ENV && . /tmp/tmpcmd"
+      - when:
+          condition:
+            not:
+              equal: [ "nul", << parameters.when >> ]
+          steps:
+            - run:
+                no_output_timeout: << parameters.timeout >>
+                name: << parameters.cmdname >>
+                command: |
+                  if [ -z "$SETUP_RAN" ]; then
+                    echo "Must run setup step first; exiting"
+                    exit 1
+                  fi
+                  echo '<< parameters.command >>' > /tmp/tmpcmd
+                  kubectl cp /tmp/tmpcmd ${POD_NAME}:/tmp/tmpcmd -c runner
+                  kubectl exec -it ${POD_NAME} -c runner -- sh -c "cd $WORK_DIR && . $BASH_ENV && . /tmp/tmpcmd"
+                when: << parameters.when >>
+  bash:
+    parameters:
+      cmdname:
+        type: string
+        default: Run command
+        description: Name of run step
+      command:
+        type: string
+        description: The command to run in bash on the pod
+      timeout:
+        type: string
+        default: "10m"
+        description: no_output_timeout
+      when:
+        type: enum
+        enum:
+        - "nul"
+        - "always"
+        - "on_failure"
+        - "on_success"
+        default: "nul"
+        description: when parameter
+    steps:
+      - when:
+          condition:
+            equal: [ "nul", << parameters.when >> ]
+          steps:
+            - run:
+                no_output_timeout: << parameters.timeout >>
+                name: << parameters.cmdname >>
+                command: |
+                  if [ -z "$SETUP_RAN" ]; then
+                    echo "Must run setup step first; exiting"
+                    exit 1
+                  fi
+                  echo '<< parameters.command >>' > /tmp/tmpcmd
+                  kubectl cp /tmp/tmpcmd ${POD_NAME}:/tmp/tmpcmd -c runner
+                  kubectl exec -it ${POD_NAME} -c runner -- bash -c "cd $WORK_DIR && . $BASH_ENV && source /tmp/tmpcmd"
+      - when:
+          condition:
+            not:
+              equal: [ "nul", << parameters.when >> ]
+          steps:
+            - run:
+                no_output_timeout: << parameters.timeout >>
+                name: << parameters.cmdname >>
+                command: |
+                  if [ -z "$SETUP_RAN" ]; then
+                    echo "Must run setup step first; exiting"
+                    exit 1
+                  fi
+                  echo '<< parameters.command >>' > /tmp/tmpcmd
+                  kubectl cp /tmp/tmpcmd ${POD_NAME}:/tmp/tmpcmd -c runner
+                  kubectl exec -it ${POD_NAME} -c runner -- bash -c "cd $WORK_DIR && . $BASH_ENV && source /tmp/tmpcmd"
+                when: << parameters.when >>
+  cp:
+    parameters:
+      from:
+        type: string
+        description: Source in pod (absolute path)
+      to:
+        type: string
+        description: Destination in CircleCI container (absolute path)
+      to_pod:
+        type: boolean
+        description: Copy from CircleCI container to onprem pod
+        default: false
+    steps:
+      - when:
+          condition: << parameters.to_pod >>
+          steps:
+            - run:
+                name: Copy from << parameters.from >> in CircleCI container to << parameters.to >> in onprem pod
+                command: |
+                  if [ -z "$SETUP_RAN" ]; then
+                    echo "Must run setup step first; exiting"
+                    exit 1
+                  fi
+                  kubectl cp << parameters.from >> ${POD_NAME}:<< parameters.to >> -c runner
+      - unless:
+          condition: << parameters.to_pod >>
+          steps:
+            - run:
+                name: Copy from << parameters.from >> in onprem pod to << parameters.to >> in CircleCI container
+                command: |
+                  if [ -z "$SETUP_RAN" ]; then
+                    echo "Must run setup step first; exiting"
+                    exit 1
+                  fi
+                  kubectl cp ${POD_NAME}:<< parameters.from >> << parameters.to >> -c runner
+  cleanup:
+    steps:
+      - run:
+          name: Delete pod
+          command: helm delete ${POD_NAME} || exit 0
+          when: always
+
