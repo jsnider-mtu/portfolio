@@ -1,4 +1,4 @@
 # Go projects
 
 Projects in their own repo:
-- github.com/jsnider-mtu/balanceovertime -- Balances my checking account
+- https://github.com/jsnider-mtu/balanceovertime -- Balances my checking account
