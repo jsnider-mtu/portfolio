@@ -1,0 +1,365 @@
+version: 2.1
+description: "Terraform Orb"
+
+orbs:
+  slack: circleci/slack@3.3.0
+
+executors:
+  default:
+    description: "Terraform Executor"
+    docker:
+      - image: 556005419303.dkr.ecr.us-east-1.amazonaws.com/terraform:0.0.1
+        aws_auth:
+          aws_access_key_id: $ECR_ACCESS_KEY_ID
+          aws_secret_access_key: $ECR_SECRET_ACCESS_KEY
+    working_directory: /workspace
+    resource_class: small
+
+commands:
+  plan:
+    description: "Create a Terraform plan"
+    parameters:
+      path:
+        type: "string"
+        description: "Path to the Terraform workspace"
+        default: "."
+      args:
+        type: "string"
+        description: "Additional Terraform flags"
+        default: ""
+    steps:
+      - add_ssh_keys
+      - run:
+          name: terraform -chdir="<< parameters.path >>" plan
+          command: |
+            #!/bin/bash
+            set -e
+            if [ "${CIRCLE_BRANCH}" == "staging" -o "${CIRCLE_BRANCH}" == "master" ]; then
+              export ACCOUNT=prod
+              export AWS_ACCESS_KEY_ID=${PROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${PROD_SECRET_ACCESS_KEY}
+            elif [ "${CIRCLE_BRANCH}" == "develop" -o "${CIRCLE_BRANCH}" == "qa" -o "${CIRCLE_BRANCH}" == "nonprod" ]; then
+              export ACCOUNT=nonprod
+              export AWS_ACCESS_KEY_ID=${NONPROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${NONPROD_SECRET_ACCESS_KEY}
+            elif [ "${CIRCLE_BRANCH}" == "sandbox" ]; then
+              export ACCOUNT=sandbox
+              export AWS_ACCESS_KEY_ID=${SANDBOX_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${SANDBOX_SECRET_ACCESS_KEY}
+            elif [ -z "${CIRCLE_BRANCH}" -a -n "${CIRCLE_TAG}" ]; then
+              export ACCOUNT=nonprod
+              export AWS_ACCESS_KEY_ID=${NONPROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${NONPROD_SECRET_ACCESS_KEY}
+              export CIRCLE_BRANCH=test
+            else
+              echo "Not a valid branch name"
+              exit 3
+            fi
+            terraform -chdir="<< parameters.path >>" init -input=false -backend-config="bucket=jsnider-mtu-${ACCOUNT}-tfstate" -backend-config="dynamodb_table=jsnider-mtu-${ACCOUNT}-tfstate" -backend-config="key=${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}.tfstate"
+            set +e
+            TF_VAR_tfw_name=$CIRCLE_PROJECT_REPONAME terraform -chdir="<< parameters.path >>" plan -input=false -detailed-exitcode -out=plan.out << parameters.args >> -var-file=${CIRCLE_BRANCH}.tfvars >plan.txt
+            readonly TF_EXIT=${PIPESTATUS[0]}
+            set -e
+            if [[ $TF_EXIT -eq 1 ]]; then
+              echo "Error running terraform"
+              exit 1
+            elif [[ $TF_EXIT -eq 0 ]]; then
+              echo "No changes to apply"
+            elif [[ $TF_EXIT -eq 2 ]]; then
+              cat plan.txt
+            fi
+  terrascan:
+    description: "Run terrascan on the workspace"
+    parameters:
+      path:
+        type: string
+        description: "Path to the Terraform workspace"
+        default: "."
+    steps:
+      - run:
+          name: "Install terrascan"
+          command: |
+            curl -L "$(curl -s https://api.github.com/repos/tenable/terrascan/releases/latest | grep -o -E "https://.+?_Linux_x86_64.tar.gz")" | tar -C /usr/local/bin -xzf - terrascan
+            chmod +x /usr/local/bin/terrascan
+      - run:
+          name: "Run terrascan"
+          command: |
+            set +e
+            echo -e "\n#############\n# Terrascan #\n#############"
+            terrascan scan -t aws -i terraform -d << parameters.path >>
+            export CIRCLE_BRANCH_ORIG=$CIRCLE_BRANCH
+            if [[ $CIRCLE_BRANCH == "master" ]]; then
+              export CIRCLE_BRANCH="production"
+            elif [[ $CIRCLE_BRANCH == "develop" ]]; then
+              export CIRCLE_BRANCH="dev"
+            fi
+            terrascan scan -t aws -i terraform -d << parameters.path >> -o json | jq -R --slurp ". | [{\"ddsource\": \"terrascan\", \"ddtags\": \"env:${CIRCLE_BRANCH},tfw-repo:${CIRCLE_PROJECT_REPONAME}\", \"hostname\": \"circleci\", \"message\": ., \"service\": \"terraform\"}]" > body.json
+            export CIRCLE_BRANCH=$CIRCLE_BRANCH_ORIG
+            curl -sSfL -H"DD-API-KEY: ${DD_API_KEY}" -H"Content-Type: application/json" -H"Accept: application/json" --data "@body.json" https://http-intake.logs.datadoghq.com/api/v2/logs
+            exit 0
+  apply:
+    description: "Apply a Terraform plan"
+    parameters:
+      path:
+        type: "string"
+        description: "Path to the Terraform workspace"
+        default: "."
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+    steps:
+      - add_ssh_keys
+      - run:
+          name: terraform -chdir="<< parameters.path >>" apply
+          no_output_timeout: "<< parameters.no_output_timeout >>"
+          command: |
+            #!/bin/bash
+            if [ "${CIRCLE_BRANCH}" == "staging" -o "${CIRCLE_BRANCH}" == "master" ]; then
+              export ACCOUNT=prod
+              export AWS_ACCESS_KEY_ID=${PROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${PROD_SECRET_ACCESS_KEY}
+            elif [ "${CIRCLE_BRANCH}" == "develop" -o "${CIRCLE_BRANCH}" == "qa" -o "${CIRCLE_BRANCH}" == "nonprod" ]; then
+              export ACCOUNT=nonprod
+              export AWS_ACCESS_KEY_ID=${NONPROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${NONPROD_SECRET_ACCESS_KEY}
+            elif [ "${CIRCLE_BRANCH}" == "sandbox" ]; then
+              export ACCOUNT=sandbox
+              export AWS_ACCESS_KEY_ID=${SANDBOX_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${SANDBOX_SECRET_ACCESS_KEY}
+            elif [ -z "${CIRCLE_BRANCH}" -a -n "${CIRCLE_TAG}" ]; then
+              export ACCOUNT=nonprod
+              export AWS_ACCESS_KEY_ID=${NONPROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${NONPROD_SECRET_ACCESS_KEY}
+              export CIRCLE_BRANCH=test
+            else
+              echo "Not a valid branch name"
+              exit 3
+            fi
+            terraform -chdir="<< parameters.path >>" init -input=false -backend-config="bucket=jsnider-mtu-${ACCOUNT}-tfstate" -backend-config="dynamodb_table=jsnider-mtu-${ACCOUNT}-tfstate" -backend-config="key=${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}.tfstate"
+            terraform -chdir="<< parameters.path >>" apply -input=false -auto-approve plan.out
+  destroy:
+    description: "Destroy Terraform resources"
+    parameters:
+      path:
+        type: "string"
+        description: "Path to the Terraform workspace"
+        default: "."
+    steps:
+      - add_ssh_keys
+      - run:
+          name: terraform -chdir="<< parameters.path >>" destroy
+          command: |
+            #!/bin/bash
+            if [ "${CIRCLE_BRANCH}" == "staging" -o "${CIRCLE_BRANCH}" == "master" ]; then
+              export ACCOUNT=prod
+              export AWS_ACCESS_KEY_ID=${PROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${PROD_SECRET_ACCESS_KEY}
+            elif [ "${CIRCLE_BRANCH}" == "develop" -o "${CIRCLE_BRANCH}" == "qa" -o "${CIRCLE_BRANCH}" == "nonprod" ]; then
+              export ACCOUNT=nonprod
+              export AWS_ACCESS_KEY_ID=${NONPROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${NONPROD_SECRET_ACCESS_KEY}
+            elif [ "${CIRCLE_BRANCH}" == "sandbox" ]; then
+              export ACCOUNT=sandbox
+              export AWS_ACCESS_KEY_ID=${SANDBOX_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${SANDBOX_SECRET_ACCESS_KEY}
+            elif [ -z "${CIRCLE_BRANCH}" -a -n "${CIRCLE_TAG}" ]; then
+              export ACCOUNT=nonprod
+              export AWS_ACCESS_KEY_ID=${NONPROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${NONPROD_SECRET_ACCESS_KEY}
+              export CIRCLE_BRANCH=test
+            else
+              echo "Not a valid branch name"
+              exit 3
+            fi
+            terraform -chdir="<< parameters.path >>" init -input=false -backend-config="bucket=jsnider-mtu-${ACCOUNT}-tfstate" -backend-config="dynamodb_table=jsnider-mtu-${ACCOUNT}-tfstate" -backend-config="key=${CIRCLE_PROJECT_REPONAME}/${CIRCLE_BRANCH}.tfstate"
+            TF_VAR_tfw_name=$CIRCLE_PROJECT_REPONAME terraform -chdir="<< parameters.path >>" destroy -input=false -auto-approve -var-file=${CIRCLE_BRANCH}.tfvars
+  moduletest:
+    description: "Test Terraform modules"
+    parameters:
+      path:
+        type: string
+        description: "Path to the Terraform workspace"
+        default: "./tests"
+      gopkgs:
+        type: string
+        description: "Go packages needed to run the module test(s). Space delimited."
+        default: "github.com/gruntwork-io/terratest/modules/terraform github.com/stretchr/testify/assert"
+      timeout:
+        type: string
+        description: "Timeout for test"
+        default: 10m
+    steps:
+      - add_ssh_keys
+      - run:
+          name: "go test -v << parameters.path >>"
+          command: |
+            #!/bin/bash
+            export AWS_ACCESS_KEY_ID=${NONPROD_ACCESS_KEY_ID}
+            export AWS_SECRET_ACCESS_KEY=${NONPROD_SECRET_ACCESS_KEY}
+            export GO111MODULE=auto
+            go mod init moduletest
+            go get -u << parameters.gopkgs >>
+            go mod tidy -compat=1.17
+            TF_VAR_tfw_name=$CIRCLE_PROJECT_REPONAME go test -v << parameters.path >> -timeout << parameters.timeout >>
+  infracost:
+    description: "Cost estimation of perticular implementation"
+    parameters:
+      args:
+        type: "string"
+        description: "Additional Terraform flags"
+        default: ""
+      path:
+          default: "."
+          description: Path to the Terraform directory or JSON/plan file. Either `path` or `config_file` is required.
+          type: string
+      api-key:
+        default: $INFRACOSTAPI_KEY
+        description: "Name of environment variable storing your Artifactory API key"
+        type: string
+    steps:
+      - add_ssh_keys
+      - run:
+          name: "Cost estimation"
+          command: |
+            #!/bin/bash
+            if [ "${CIRCLE_BRANCH}" == "staging" -o "${CIRCLE_BRANCH}" == "master" ]; then
+              export ACCOUNT=prod
+              export AWS_ACCESS_KEY_ID=${PROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${PROD_SECRET_ACCESS_KEY}
+            elif [ "${CIRCLE_BRANCH}" == "develop" -o "${CIRCLE_BRANCH}" == "qa" -o "${CIRCLE_BRANCH}" == "nonprod" ]; then
+              export ACCOUNT=nonprod
+              export AWS_ACCESS_KEY_ID=${NONPROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${NONPROD_SECRET_ACCESS_KEY}
+            elif [ "${CIRCLE_BRANCH}" == "sandbox" ]; then
+              export ACCOUNT=sandbox
+              export AWS_ACCESS_KEY_ID=${SANDBOX_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${SANDBOX_SECRET_ACCESS_KEY}
+            elif [ -z "${CIRCLE_BRANCH}" -a -n "${CIRCLE_TAG}" ]; then
+              export ACCOUNT=nonprod
+              export AWS_ACCESS_KEY_ID=${NONPROD_ACCESS_KEY_ID}
+              export AWS_SECRET_ACCESS_KEY=${NONPROD_SECRET_ACCESS_KEY}
+              export CIRCLE_BRANCH=test
+            else
+              echo "Not a valid branch name"
+              exit 3
+            fi
+            set +e
+              # Downloads the CLI based on your OS/arch and put it in /usr/local/bin
+              curl -fsSL https://raw.githubusercontent.com/infracost/infracost/master/scripts/install.sh | sh
+              infracost configure set api_key <<parameters.api-key>>
+              cd /workspace/
+              infracost breakdown --path="." --terraform-var-file ${CIRCLE_BRANCH}.tfvars
+
+jobs:
+  plan:
+    executor: default
+    description: "Create a Terraform plan"
+    parameters:
+      path:
+        type: string
+        description: "Path to the Terraform workspace"
+        default: "."
+      args:
+        type: "string"
+        description: "Additional Terraform flags"
+        default: ""
+    steps:
+      - checkout
+      - plan:
+          path: "<< parameters.path >>"
+          args: "<< parameters.args >>"
+      - terrascan:
+          path: "<< parameters.path >>"
+      - persist_to_workspace:
+          root: /workspace
+          paths:
+            - plan.txt
+            - plan.out
+            - locally_created_files/*
+      - slack/status:
+          fail_only: true
+          failure_message: "A $CIRCLE_JOB job on branch $CIRCLE_BRANCH has failed!"
+  apply:
+    executor: default
+    description: "Apply a Terraform plan"
+    parameters:
+      path:
+        type: "string"
+        description: "Path to the Terraform workspace"
+        default: "."
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /workspace
+      - apply:
+          path: "<< parameters.path >>"
+          no_output_timeout: "<< parameters.no_output_timeout >>"
+      - slack/status:
+          success_message: "A $CIRCLE_JOB job on branch $CIRCLE_BRANCH has succeeded!"
+          failure_message: "A $CIRCLE_JOB job on branch $CIRCLE_BRANCH has failed!"
+  destroy:
+    executor: default
+    description: "Destroy Terraform resources"
+    parameters:
+      path:
+        type: "string"
+        description: "Path to the Terraform workspace"
+        default: "."
+    steps:
+      - checkout
+      - destroy:
+          path: "<< parameters.path >>"
+      - slack/status:
+          success_message: "A $CIRCLE_JOB job on branch $CIRCLE_BRANCH has succeeded!"
+          failure_message: "A $CIRCLE_JOB job on branch $CIRCLE_BRANCH has failed!"
+  moduletest:
+    executor: default
+    description: "Test terraform modules"
+    parameters:
+      path:
+        type: string
+        description: "Path to the Terraform module"
+        default: "./tests"
+      gopkgs:
+        type: string
+        description: "Go packages needed to run the module test(s). Space delimited."
+        default: "github.com/gruntwork-io/terratest/modules/terraform@v0.32.0 github.com/stretchr/testify/assert"
+      timeout:
+        type: string
+        description: "Timeout for test"
+        default: 10m
+    steps:
+      - checkout
+      - moduletest:
+          path: "<< parameters.path >>"
+          gopkgs: "<< parameters.gopkgs >>"
+          timeout: "<< parameters.timeout >>"
+      - slack/status:
+          fail_only: true
+          failure_message: "A $CIRCLE_JOB job on branch $CIRCLE_BRANCH has failed!"
+  infracost:
+    executor: default
+    description: "Cost estimation of perticular implementation"
+    parameters:
+      args:
+        type: "string"
+        description: "Additional Terraform flags"
+        default: ""
+      path:
+          default: "."
+          description: Path to the Terraform directory or JSON/plan file. Either `path` or `config_file` is required.
+          type: string
+      api-key:
+        default: $INFRACOSTAPI_KEY
+        description: "Name of environment variable storing your Artifactory API key"
+        type: string
+    steps:
+      - checkout
+      - infracost:
+          api-key: <<parameters.api-key>>
+          path: "<< parameters.path >>"

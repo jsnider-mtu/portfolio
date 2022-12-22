@@ -1,0 +1,1976 @@
+version: 2.1
+description: "Helm Orb"
+
+orbs:
+  slack: circleci/slack@3.4.1
+
+executors:
+  default:
+    parameters:
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+    description: "Helm Executor"
+    docker:
+    - image: 556005419303.dkr.ecr.us-east-1.amazonaws.com/helm:0.0.1
+      aws_auth:
+        aws_access_key_id: $ECR_ACCESS_KEY_ID
+        aws_secret_access_key: $ECR_SECRET_ACCESS_KEY
+    resource_class: << parameters.resource-class >>
+
+commands:
+  packagenpushchart:
+    description: "Package & push the chart"
+    parameters:
+      path:
+        type: string
+        description: "Path to chart directory"
+      generate-chart:
+        type: boolean
+        description: "Whether to generate helm chart from default template"
+        default: false
+      valuesFileDir:
+        type: string
+        description: "Point to different value directory"
+        default: ./valuesFiles
+    steps:
+      - run:
+          name: Create VERSION file
+          command: |
+            if [ ! -e VERSION ]; then
+              git fetch --tags
+              CURVER=$(git describe --tags $(git rev-list --tags --max-count=1) | sed 's/v//g')
+              if [ -z "$CURVER" ]; then
+                echo "0.0.1" > VERSION
+              else
+                echo "$CURVER" > VERSION
+              fi
+            fi
+      - run:
+          name: Set the tag for the image
+          command: |
+            if [ ! -e /home/circleci/TAG ]; then
+              echo 'export TAG=$(cat VERSION)-$(($CIRCLE_BUILD_NUM - 1))' >> $BASH_ENV
+            else
+              echo 'export TAG=$(cat /home/circleci/TAG)' >> $BASH_ENV
+            fi
+      - run:
+          name: Set the path
+          command: echo 'export PATH=$HOME/bin:$PATH' >> $BASH_ENV
+      - run:
+          name: Set the chart name
+          command: echo 'export CHART=$(basename << parameters.path >>)' >> $BASH_ENV
+      - run:
+          name: Install push-artifactory plugin
+          command: helm plugin install https://github.com/belitre/helm-push-artifactory-plugin --version 1.0.1
+      - run:
+          name: Set image tag in helm chart
+          command: |
+            for x in << parameters.valuesFileDir >>/*values.yaml; do
+              sed -i "s/tag: 0\.0\.1$/tag: ${TAG}/" $x
+            done
+      - when:
+          condition: << parameters.generate-chart >>
+          steps:
+            - run:
+                name: Set AWS Creds
+                command: echo "export AWS_ACCESS_KEY_ID=$PROD_ACCESS_KEY_ID" >> $BASH_ENV && echo "export AWS_SECRET_ACCESS_KEY=$PROD_SECRET_ACCESS_KEY" >> $BASH_ENV
+            - run:
+                name: Remove older chart starter if it exists
+                command: |
+                  set +e
+                  rm -r /home/circleci/.local/share/helm/starters/helm-template
+                  exit 0
+            - run:
+                name: Grab default helm chart
+                command: ~/bin/aws s3 sync s3://jsnider-mtu-helm-template /home/circleci/.local/share/helm/starters/helm-template
+            - run:
+                name: Generate helm chart
+                command: helm create << parameters.path >> --starter helm-template
+      - run:
+          name: Build helm chart tgz
+          command: helm package -u --version ${TAG} << parameters.path >>
+      - run:
+          name: Add local Artifactory helm repo
+          command: helm repo add jsnider-mtu https://jsnider-mtu.jfrog.io/jsnider-mtu/helm-local/ --username ${ARTIFACTORY_USER} --password ${ARTIFACTORY_PASS} --force-update
+      - run:
+          name: Push helm chart to Artifactory
+          command: helm push-artifactory ${CHART}-${TAG}.tgz pmhelm --username ${ARTIFACTORY_USER} --password ${ARTIFACTORY_PASS}
+      - run:
+          name: Keep chart name and tag for next steps
+          command: echo "${CHART}" > $HOME/chart_name && echo "${TAG}" > $HOME/tag
+
+  deploytodev:
+    description: "Deploy helm chart to dev"
+    parameters:
+      helmFlags:
+        type: string
+        description: "Flags passed to helm"
+        default: "[]"
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+      namespace-prefix:
+        type: string
+        description: "Prefix of the Namespace"
+      noHooks:
+        type: boolean
+        description: "disable pre/post upgrade hooks"
+        default: false
+      timeout:
+        type: integer
+        description: "time to wait for any individual Kubernetes operation"
+        default: 300
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      valuesFile:
+        type: string
+        description: "Point to different values file"
+        default: "dev-values.yaml"
+      wait:
+        type: boolean
+        description: "Enable to have helm wait for resources to become ready before finishing"
+        default: true
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - run:
+          name: Populate TAG variable
+          command: echo 'export TAG=$(cat $HOME/tag)' >> $BASH_ENV
+      - run:
+          name: Set the path
+          command: echo 'export PATH=$HOME/bin:$PATH' >> $BASH_ENV
+      - run:
+          name: Populate CHART variable
+          command: echo 'export CHART=$(cat $HOME/chart_name)' >> $BASH_ENV
+      - run:
+          name: Set the namespace prefix
+          command: echo 'export NS_PREFIX=$(basename << parameters.namespace-prefix >>)' >> $BASH_ENV
+      - run:
+          name: Set the namespace environment
+          command: echo 'export NS_ENV=dev' >> $BASH_ENV
+      - run:
+          name: Set AWS keys
+          command: echo 'export AWS_ACCESS_KEY_ID=$NONPROD_ACCESS_KEY_ID' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=$NONPROD_SECRET_ACCESS_KEY' >> $BASH_ENV
+      - run:
+          name: Ensure version of chart is available in repo
+          command: |
+            helm repo add jsnider-mtu https://jsnider-mtu.jfrog.io/jsnider-mtu/helm/ --username ${ARTIFACTORY_USER} --password ${ARTIFACTORY_PASS} --force-update
+            helm repo update
+            RESPONSE=$(helm search repo jsnider-mtu/${CHART} --version ${TAG} -l --devel)
+            if [[ "$RESPONSE" == "No results found" ]]; then
+              echo "Failed to find current version of chart; trying again after 60 seconds"
+              sleep 60
+              helm repo update
+              helm search jsnider-mtu/${CHART} --version ${TAG} -l --devel
+            fi
+      - run:
+          name: Generate dev-helmsman.yaml
+          command: |
+            cat \<<EOF >dev-helmsman.yaml
+            metadata:
+              maintainer: "Joshua Snider <jsnider@mtu.edu>"
+
+            namespaces:
+              ${NS_PREFIX}-dev:
+                protected: false
+
+            helmRepos:
+              jsnider-mtu: "https://\${ARTIFACTORY_USER}:\${ARTIFACTORY_PASS}@jsnider-mtu.jfrog.io/jsnider-mtu/helm/"
+
+            apps:
+              ${CHART}-dev:
+                namespace: "${NS_PREFIX}-dev"
+                enabled: true
+                chart: "jsnider-mtu/${CHART}"
+                version: "\${TAG}"
+                valuesFile: "<< parameters.valuesFileDir >>/<< parameters.valuesFile >>"
+                noHooks: << parameters.noHooks >>
+                timeout: << parameters.timeout >>
+                wait: << parameters.wait >>
+                helmFlags: << parameters.helmFlags >>
+            EOF
+            SWAGGERS=$(for x in `yq e '.services[] | select(.swaggerDoc) | path | .[-1]' << parameters.valuesFileDir >>/<< parameters.valuesFile >>`; do
+                        yq e ".services[$x] | { \"\\\"services[$x].swaggerJSON\\\"\": .swaggerDoc }" << parameters.valuesFileDir >>/<< parameters.valuesFile >>
+                      done | tr -d "'")
+            if [ ! -z "$SWAGGERS" ]; then
+              echo "    setFile:" >> dev-helmsman.yaml
+              echo "$SWAGGERS"|sed 's/^/      /' >> dev-helmsman.yaml
+            fi
+      - when:
+          condition: << parameters.eastRegion >>
+          steps:
+          - run:
+              name: Get the us-east-1 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-east-1 update-kubeconfig --name jsnider-mtu-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Dev release
+              command: helmsman --debug --apply -f dev-helmsman.yaml --kubeconfig=$HOME/.kube/kubeconfig --target ${CHART}-dev --subst-env-values
+              no_output_timeout: "<< parameters.no_output_timeout >>"
+          - run:
+              name: Rollout status
+              command: |
+                set +e
+                for DEPLOYNAME in `kubectl get deployment -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                  kubectl rollout status deployment/${DEPLOYNAME} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig
+                  if [[ $? -eq 1 ]]; then
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-dev -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                    exit 1
+                  else
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-dev -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                  fi
+                done
+          - run:
+              name: Helm history
+              command: helm history ${CHART}-dev -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig
+              when: always
+      - when:
+          condition: << parameters.westRegion >>
+          steps:
+          - run:
+              name: Get the us-west-2 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-west-2 update-kubeconfig --name jsnider-mtu-west-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Dev release
+              command: helmsman --debug --apply -f dev-helmsman.yaml --kubeconfig=$HOME/.kube/kubeconfig --target ${CHART}-dev --subst-env-values
+              no_output_timeout: "<< parameters.no_output_timeout >>"
+          - run:
+              name: Rollout status
+              command: |
+                set +e
+                for DEPLOYNAME in `kubectl get deployment -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                  kubectl rollout status deployment/${DEPLOYNAME} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig
+                  if [[ $? -eq 1 ]]; then
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-dev -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                    exit 1
+                  else
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-dev -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                  fi
+                done
+          - run:
+              name: Helm history
+              command: helm history ${CHART}-dev -n ${NS_PREFIX}-dev --kubeconfig=$HOME/.kube/kubeconfig
+              when: always
+
+  deploytoqa:
+    description: "Deploy helm chart to QA"
+    parameters:
+      helmFlags:
+        type: string
+        description: "Flags passed to helm"
+        default: "[]"
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+      namespace-prefix:
+        type: string
+        description: "Prefix of the Namespace"
+      noHooks:
+        type: boolean
+        description: "disable pre/post upgrade hooks"
+        default: false
+      timeout:
+        type: integer
+        description: "time to wait for any individual Kubernetes operation"
+        default: 300
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      valuesFile:
+        type: string
+        description: "Point to different values file"
+        default: "qa-values.yaml"
+      wait:
+        type: boolean
+        description: "Enable to have helm wait for resources to become ready before finishing"
+        default: true
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - run:
+          name: Populate TAG variable
+          command: echo 'export TAG=$(cat $HOME/tag)' >> $BASH_ENV
+      - run:
+          name: Set the path
+          command: echo 'export PATH=$HOME/bin:$PATH' >> $BASH_ENV
+      - run:
+          name: Populate CHART variable
+          command: echo 'export CHART=$(cat $HOME/chart_name)' >> $BASH_ENV
+      - run:
+          name: Set the namespace prefix
+          command: echo 'export NS_PREFIX=$(basename << parameters.namespace-prefix >>)' >> $BASH_ENV
+      - run:
+          name: Set the namespace environment
+          command: echo 'export NS_ENV=qa' >> $BASH_ENV
+      - run:
+          name: Set AWS keys
+          command: echo 'export AWS_ACCESS_KEY_ID=$NONPROD_ACCESS_KEY_ID' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=$NONPROD_SECRET_ACCESS_KEY' >> $BASH_ENV
+      - run:
+          name: Ensure version of chart is available in repo
+          command: |
+            helm repo add jsnider-mtu https://jsnider-mtu.jfrog.io/jsnider-mtu/helm/ --username ${ARTIFACTORY_USER} --password ${ARTIFACTORY_PASS} --force-update
+            helm repo update
+            RESPONSE=$(helm search repo jsnider-mtu/${CHART} --version ${TAG} -l --devel)
+            if [[ "$RESPONSE" == "No results found" ]]; then
+              echo "Failed to find current version of chart; trying again after 60 seconds"
+              sleep 60
+              helm repo update
+              helm search repo jsnider-mtu/${CHART} --version ${TAG} -l --devel
+            fi
+      - run:
+          name: Generate qa-helmsman.yaml
+          command: |
+            cat \<<EOF >qa-helmsman.yaml
+            metadata:
+              maintainer: "Joshua Snider <jsnider@mtu.edu>"
+
+            namespaces:
+              ${NS_PREFIX}-qa:
+                protected: false
+
+            helmRepos:
+              jsnider-mtu: "https://\${ARTIFACTORY_USER}:\${ARTIFACTORY_PASS}@jsnider-mtu.jfrog.io/jsnider-mtu/helm/"
+
+            apps:
+              ${CHART}-qa:
+                namespace: "${NS_PREFIX}-qa"
+                enabled: true
+                chart: "jsnider-mtu/${CHART}"
+                version: "\${TAG}"
+                valuesFile: "<< parameters.valuesFileDir >>/<< parameters.valuesFile >>"
+                noHooks: << parameters.noHooks >>
+                timeout: << parameters.timeout >>
+                wait: << parameters.wait >>
+                helmFlags: << parameters.helmFlags >>
+            EOF
+            SWAGGERS=$(for x in `yq e '.services[] | select(.swaggerDoc) | path | .[-1]' << parameters.valuesFileDir >>/<< parameters.valuesFile >>`; do
+                         yq e ".services[$x] | { \"\\\"services[$x].swaggerJSON\\\"\": .swaggerDoc }" << parameters.valuesFileDir >>/<< parameters.valuesFile >>
+                       done | tr -d "'")
+            if [ ! -z "$SWAGGERS" ]; then
+              echo "    setFile:" >> qa-helmsman.yaml
+              echo "$SWAGGERS"|sed 's/^/      /' >> qa-helmsman.yaml
+            fi
+      - when:
+          condition: << parameters.eastRegion >>
+          steps:
+          - run:
+              name: Get the us-east-1 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-east-1 update-kubeconfig --name jsnider-mtu-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: QA release
+              command: helmsman --debug --apply -f qa-helmsman.yaml --kubeconfig=$HOME/.kube/kubeconfig --target ${CHART}-qa --subst-env-values
+              no_output_timeout: "<< parameters.no_output_timeout >>"
+          - run:
+              name: Rollout status
+              command: |
+                set +e
+                for DEPLOYNAME in `kubectl get deployment -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                  kubectl rollout status deployment/${DEPLOYNAME} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig
+                  if [[ $? -eq 1 ]]; then
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-qa -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                    exit 1
+                  else
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-qa -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                  fi
+                done
+          - run:
+              name: Helm history
+              command: helm history ${CHART}-qa -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig
+              when: always
+      - when:
+          condition: << parameters.westRegion >>
+          steps:
+          - run:
+              name: Get the us-west-2 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-west-2 update-kubeconfig --name jsnider-mtu-west-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: QA release
+              command: helmsman --debug --apply -f qa-helmsman.yaml --kubeconfig=$HOME/.kube/kubeconfig --target ${CHART}-qa --subst-env-values
+              no_output_timeout: "<< parameters.no_output_timeout >>"
+          - run:
+              name: Rollout status
+              command: |
+                set +e
+                for DEPLOYNAME in `kubectl get deployment -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                  kubectl rollout status deployment/${DEPLOYNAME} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig
+                  if [[ $? -eq 1 ]]; then
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-qa -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                    exit 1
+                  else
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-qa -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                  fi
+                done
+          - run:
+              name: Helm history
+              command: helm history ${CHART}-qa -n ${NS_PREFIX}-qa --kubeconfig=$HOME/.kube/kubeconfig
+              when: always
+
+  deploytostaging:
+    description: "Deploy helm chart to staging"
+    parameters:
+      helmFlags:
+        type: string
+        description: "Flags passed to helm"
+        default: "[]"
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+      namespace-prefix:
+        type: string
+        description: "Prefix of the Namespace"
+      noHooks:
+        type: boolean
+        description: "disable pre/post upgrade hooks"
+        default: false
+      timeout:
+        type: integer
+        description: "time to wait for any individual Kubernetes operation"
+        default: 300
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      valuesFile:
+        type: string
+        description: "name of your values file"
+        default: "staging-values.yaml"
+      wait:
+        type: boolean
+        description: "Enable to have helm wait for resources to become ready before finishing"
+        default: true
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - run:
+          name: Populate TAG variable
+          command: echo 'export TAG=$(cat $HOME/tag)' >> $BASH_ENV
+      - run:
+          name: Set the path
+          command: echo 'export PATH=$HOME/bin:$PATH' >> $BASH_ENV
+      - run:
+          name: Populate CHART variable
+          command: echo 'export CHART=$(cat $HOME/chart_name)' >> $BASH_ENV
+      - run:
+          name: Set the namespace prefix
+          command: echo 'export NS_PREFIX=$(basename << parameters.namespace-prefix >>)' >> $BASH_ENV
+      - run:
+          name: Set the namespace environment
+          command: echo 'export NS_ENV=staging' >> $BASH_ENV
+      - run:
+          name: Set AWS keys
+          command: echo 'export AWS_ACCESS_KEY_ID=$PROD_ACCESS_KEY_ID' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=$PROD_SECRET_ACCESS_KEY' >> $BASH_ENV
+      - run:
+          name: Ensure version of chart is available in repo
+          command: |
+            helm repo add jsnider-mtu https://jsnider-mtu.jfrog.io/jsnider-mtu/helm/ --username ${ARTIFACTORY_USER} --password ${ARTIFACTORY_PASS} --force-update
+            helm repo update
+            RESPONSE=$(helm search repo jsnider-mtu/${CHART} --version ${TAG} -l --devel)
+            if [[ "$RESPONSE" == "No results found" ]]; then
+              echo "Failed to find current version of chart; trying again after 60 seconds"
+              sleep 60
+              helm repo update
+              helm search repo jsnider-mtu/${CHART} --version ${TAG} -l --devel
+            fi
+      - run:
+          name: Generate staging-helmsman.yaml
+          command: |
+            cat \<<EOF >staging-helmsman.yaml
+            metadata:
+              maintainer: "Joshua Snider <jsnider@mtu.edu>"
+
+            namespaces:
+              ${NS_PREFIX}-staging:
+                protected: false
+
+            helmRepos:
+              jsnider-mtu: "https://\${ARTIFACTORY_USER}:\${ARTIFACTORY_PASS}@jsnider-mtu.jfrog.io/jsnider-mtu/helm/"
+
+            apps:
+              ${CHART}-staging:
+                namespace: "${NS_PREFIX}-staging"
+                enabled: true
+                chart: "jsnider-mtu/${CHART}"
+                version: "\${TAG}"
+                valuesFile: "<< parameters.valuesFileDir >>/<< parameters.valuesFile >>"
+                noHooks: << parameters.noHooks >>
+                timeout: << parameters.timeout >>
+                wait: << parameters.wait >>
+                helmFlags: << parameters.helmFlags >>
+            EOF
+            SWAGGERS=$(for x in `yq e '.services[] | select(.swaggerDoc) | path | .[-1]' << parameters.valuesFileDir >>/<< parameters.valuesFile >>`; do
+                         yq e ".services[$x] | { \"\\\"services[$x].swaggerJSON\\\"\": .swaggerDoc }" << parameters.valuesFileDir >>/<< parameters.valuesFile >>
+                       done | tr -d "'")
+            if [ ! -z "$SWAGGERS" ]; then
+              echo "    setFile:" >> staging-helmsman.yaml
+              echo "$SWAGGERS"|sed 's/^/      /' >> staging-helmsman.yaml
+            fi
+      - when:
+          condition: << parameters.eastRegion >>
+          steps:
+          - run:
+              name: Get the us-east-1 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-east-1 update-kubeconfig --name jsnider-mtu-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Staging release
+              command: helmsman --debug --apply -f staging-helmsman.yaml --kubeconfig=$HOME/.kube/kubeconfig --target ${CHART}-staging --subst-env-values
+              no_output_timeout: "<< parameters.no_output_timeout >>"
+          - run:
+              name: Rollout status
+              command: |
+                set +e
+                for DEPLOYNAME in `kubectl get deployment -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                  kubectl rollout status deployment/${DEPLOYNAME} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig
+                  if [[ $? -eq 1 ]]; then
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-staging -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                    exit 1
+                  else
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-staging -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                  fi
+                done
+          - run:
+              name: Helm history
+              command: helm history ${CHART}-staging -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig
+              when: always
+      - when:
+          condition: << parameters.westRegion >>
+          steps:
+          - run:
+              name: Get the us-west-2 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-west-2 update-kubeconfig --name jsnider-mtu-west-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Staging release
+              command: helmsman --debug --apply -f staging-helmsman.yaml --kubeconfig=$HOME/.kube/kubeconfig --target ${CHART}-staging --subst-env-values
+              no_output_timeout: "<< parameters.no_output_timeout >>"
+          - run:
+              name: Rollout status
+              command: |
+                set +e
+                for DEPLOYNAME in `kubectl get deployment -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                  kubectl rollout status deployment/${DEPLOYNAME} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig
+                  if [[ $? -eq 1 ]]; then
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-staging -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                    exit 1
+                  else
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-staging -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                  fi
+                done
+          - run:
+              name: Helm history
+              command: helm history ${CHART}-staging -n ${NS_PREFIX}-staging --kubeconfig=$HOME/.kube/kubeconfig
+              when: always
+
+  deploytoprod:
+    description: "Deploy helm chart to production"
+    parameters:
+      helmFlags:
+        type: string
+        description: "Flags passed to helm"
+        default: "[]"
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+      namespace-prefix:
+        type: string
+        description: "Prefix of the Namespace"
+      noHooks:
+        type: boolean
+        description: "disable pre/post upgrade hooks"
+        default: false
+      timeout:
+        type: integer
+        description: "time to wait for any individual Kubernetes operation"
+        default: 300
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      valuesFile:
+        type: string
+        description: "path to the values file"
+        default: "prod-values.yaml"
+      env-name:
+        type: string
+        description: "Use if this helm chart was deployed first outside of helmsman as namespace: prod instead of production"
+        default: "production"
+      wait:
+        type: boolean
+        description: "Enable to have helm wait for resources to become ready before finishing"
+        default: true
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - run:
+          name: Populate TAG variable
+          command: echo 'export TAG=$(cat $HOME/tag)' >> $BASH_ENV
+      - run:
+          name: Set the path
+          command: echo 'export PATH=$HOME/bin:$PATH' >> $BASH_ENV
+      - run:
+          name: Populate CHART variable
+          command: echo 'export CHART=$(cat $HOME/chart_name)' >> $BASH_ENV
+      - run:
+          name: Set the namespace prefix
+          command: echo 'export NS_PREFIX=$(basename << parameters.namespace-prefix >>)' >> $BASH_ENV
+      - run:
+          name: Set the namespace environment
+          command: echo 'export NS_ENV=$(basename << parameters.env-name >>)' >> $BASH_ENV
+      - run:
+          name: Set AWS keys
+          command: echo 'export AWS_ACCESS_KEY_ID=$PROD_ACCESS_KEY_ID' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=$PROD_SECRET_ACCESS_KEY' >> $BASH_ENV
+      - run:
+          name: Ensure version of chart is available in repo
+          command: |
+            helm repo add jsnider-mtu https://jsnider-mtu.jfrog.io/jsnider-mtu/helm/ --username ${ARTIFACTORY_USER} --password ${ARTIFACTORY_PASS} --force-update
+            helm repo update
+            RESPONSE=$(helm search repo jsnider-mtu/${CHART} --version ${TAG} -l --devel)
+            if [[ "$RESPONSE" == "No results found" ]]; then
+              echo "Failed to find current version of chart; trying again after 60 seconds"
+              sleep 60
+              helm repo update
+              helm search repo jsnider-mtu/${CHART} --version ${TAG} -l --devel
+            fi
+      - run:
+          name: Generate prod-helmsman.yaml
+          command: |
+            cat \<<EOF >prod-helmsman.yaml
+            metadata:
+              maintainer: "Joshua Snider <jsnider@mtu.edu>"
+
+            namespaces:
+              ${NS_PREFIX}-${NS_ENV}:
+                protected: false
+
+            helmRepos:
+              jsnider-mtu: "https://\${ARTIFACTORY_USER}:\${ARTIFACTORY_PASS}@jsnider-mtu.jfrog.io/jsnider-mtu/helm/"
+
+            apps:
+              ${CHART}-production:
+                namespace: "${NS_PREFIX}-${NS_ENV}"
+                enabled: true
+                chart: "jsnider-mtu/${CHART}"
+                version: "\${TAG}"
+                valuesFile: "<< parameters.valuesFileDir >>/<< parameters.valuesFile >>"
+                noHooks: << parameters.noHooks >>
+                timeout: << parameters.timeout >>
+                wait: << parameters.wait >>
+                helmFlags: << parameters.helmFlags >>
+            EOF
+            SWAGGERS=$(for x in `yq e '.services[] | select(.swaggerDoc) | path | .[-1]' << parameters.valuesFileDir >>/<< parameters.valuesFile >>`; do
+                         yq e ".services[$x] | { \"\\\"services[$x].swaggerJSON\\\"\": .swaggerDoc }" << parameters.valuesFileDir >>/<< parameters.valuesFile >>
+                       done | tr -d "'")
+            if [ ! -z "$SWAGGERS" ]; then
+              echo "    setFile:" >> prod-helmsman.yaml
+              echo "$SWAGGERS"|sed 's/^/      /' >> prod-helmsman.yaml
+            fi
+      - when:
+          condition: << parameters.eastRegion >>
+          steps:
+          - run:
+              name: Get the us-east-1 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-east-1 update-kubeconfig --name jsnider-mtu-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Prod release
+              command: helmsman --debug --apply -f prod-helmsman.yaml --kubeconfig=$HOME/.kube/kubeconfig --target ${CHART}-production --subst-env-values
+              no_output_timeout: "<< parameters.no_output_timeout >>"
+          - run:
+              name: Rollout status
+              command: |
+                set +e
+                for DEPLOYNAME in `kubectl get deployment -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                  kubectl rollout status deployment/${DEPLOYNAME} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig
+                  if [[ $? -eq 1 ]]; then
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-${NS_ENV} -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                    exit 1
+                  else
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-${NS_ENV} -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                  fi
+                done
+          - run:
+              name: Helm history
+              command: helm history ${CHART}-production -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig
+              when: always
+      - when:
+          condition: << parameters.westRegion >>
+          steps:
+          - run:
+              name: Get the us-west-2 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-west-2 update-kubeconfig --name jsnider-mtu-west-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Prod release
+              command: helmsman --debug --apply -f prod-helmsman.yaml --kubeconfig=$HOME/.kube/kubeconfig --target ${CHART}-production --subst-env-values
+              no_output_timeout: "<< parameters.no_output_timeout >>"
+          - run:
+              name: Rollout status
+              command: |
+                set +e
+                for DEPLOYNAME in `kubectl get deployment -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                  kubectl rollout status deployment/${DEPLOYNAME} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig
+                  if [[ $? -eq 1 ]]; then
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-${NS_ENV} -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                    exit 1
+                  else
+                    echo
+                    export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n ${NS_PREFIX}-${NS_ENV} -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                    for POD in `kubectl get pod --selector=${SELECTOR} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                      echo ${POD}
+                      kubectl get events --field-selector involvedObject.name=${POD} -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig
+                      echo
+                    done
+                  fi
+                done
+          - run:
+              name: Helm history
+              command: helm history ${CHART}-production -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig
+              when: always
+
+  helm-diff:
+    parameters:
+      path-to-values-file:
+        type: string
+      helm-options:
+        type: string
+        default: ""
+      aws-key:
+        type: string
+      aws-secret:
+        type: string
+      chart-name:
+        type: string
+      deployment-namespace:
+        type: string
+      chart-path:
+        type: string
+        default: "."
+      update-tag:
+        type: boolean
+        default: true
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+    - checkout
+    - run:
+        name: Populate TAG variable
+        command: |
+          if [[ -f $HOME/tag ]]; then
+            echo 'export TAG=$(cat $HOME/tag)' >> $BASH_ENV
+          else
+            echo "export TAG=$(yq e '.version' << parameters.chart-path >>/Chart.yaml)" >> $BASH_ENV
+          fi
+    - run:
+        name: Set PATH
+        command: echo 'export PATH=$PATH:~/bin' >> $BASH_ENV
+    - run:
+        name: Set AWS KEYS
+        command: echo 'export AWS_ACCESS_KEY_ID=<< parameters.aws-key >>' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=<< parameters.aws-secret >>' >> $BASH_ENV
+    - when:
+        condition: << parameters.update-tag >>
+        steps:
+        - run:
+            name: Set image tag in values file
+            command: |
+              sed -i "s/tag: 0\.0\.1$/tag: ${TAG}/" << parameters.path-to-values-file >>
+    - run:
+        name: Add dependency repos
+        command: |
+          yq --indent 0 e '.dependencies | map(["helm", "repo", "add", .name, .repository] | join(" ")) | .[]' "<< parameters.chart-path >>/Chart.yaml" | sh --;
+    - run:
+        name: Pull << parameters.chart-name >> Chart
+        command: helm dependency build << parameters.chart-path >>
+    - when:
+        condition: << parameters.eastRegion >>
+        steps:
+        - run:
+            name: Get the us-east-1 kubeconfig file
+            command: |
+              mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-east-1 update-kubeconfig --name jsnider-mtu-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+        - run:
+            name: Helm diff us-east-1
+            command: helm diff upgrade --install << parameters.chart-name >> << parameters.chart-path >> -f <<parameters.path-to-values-file>> <<parameters.helm-options>> -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+    - when:
+        condition: << parameters.westRegion >>
+        steps:
+        - run:
+            name: Get the us-west-2 kubeconfig file
+            command: |
+              mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-west-2 update-kubeconfig --name jsnider-mtu-west-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+        - run:
+            name: Helm diff us-west-2
+            command: helm diff upgrade --install << parameters.chart-name >> << parameters.chart-path >> -f <<parameters.path-to-values-file>> <<parameters.helm-options>> -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+
+  helm-apply:
+    parameters:
+      path-to-values-file:
+        type: string
+      helm-options:
+        type: string
+        default: ""
+      aws-key:
+        type: string
+      aws-secret:
+        type: string
+      chart-name:
+        type: string
+      deployment-namespace:
+        type: string
+      chart-path:
+        type: string
+        default: "."
+      update-tag:
+        type: boolean
+        default: true
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+    - checkout
+    - run:
+        name: Populate TAG variable
+        command: |
+          if [[ -f $HOME/tag ]]; then
+            echo 'export TAG=$(cat $HOME/tag)' >> $BASH_ENV
+          else
+            echo "export TAG=$(yq e '.version' << parameters.chart-path >>/Chart.yaml)" >> $BASH_ENV
+          fi
+    - run:
+        name: Set PATH
+        command: echo 'export PATH=$PATH:~/bin' >> $BASH_ENV
+    - run:
+        name: Set AWS KEYS
+        command: echo 'export AWS_ACCESS_KEY_ID=<< parameters.aws-key >>' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=<< parameters.aws-secret >>' >> $BASH_ENV
+    - when:
+        condition: << parameters.update-tag >>
+        steps:
+        - run:
+            name: Set image tag in values file
+            command: |
+              sed -i "s/tag: 0\.0\.1$/tag: ${TAG}/" << parameters.path-to-values-file >>
+    - run:
+        name: Add dependency repos
+        command: |
+          yq --indent 0 e '.dependencies | map(["helm", "repo", "add", .name, .repository] | join(" ")) | .[]' "<< parameters.chart-path >>/Chart.yaml" | sh --;
+    - run:
+        name: Pull << parameters.chart-name >> Chart
+        command: helm dependency build << parameters.chart-path >>
+    - when:
+        condition: << parameters.eastRegion >>
+        steps:
+        - run:
+            name: Get the us-east-1 kubeconfig file
+            command: |
+              mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-east-1 update-kubeconfig --name jsnider-mtu-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+        - run:
+            name: Helm apply
+            command: helm upgrade --install << parameters.chart-name >> << parameters.chart-path >> -f <<parameters.path-to-values-file>> << parameters.helm-options >> -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+        - run:
+            name: Rollout status
+            command: |
+              set +e
+              for DEPLOYNAME in `kubectl get deployment -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                kubectl rollout status deployment/${DEPLOYNAME} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                if [[ $? -eq 1 ]]; then
+                  echo
+                  export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n << parameters.deployment-namespace >> -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                  for POD in `kubectl get pod --selector=${SELECTOR} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                    echo ${POD}
+                    kubectl get events --field-selector involvedObject.name=${POD} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                    echo
+                  done
+                  exit 1
+                else
+                  echo
+                  export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n << parameters.deployment-namespace >> -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                  for POD in `kubectl get pod --selector=${SELECTOR} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                    echo ${POD}
+                    kubectl get events --field-selector involvedObject.name=${POD} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                    echo
+                  done
+                fi
+              done
+        - run:
+            name: Helm history
+            command: helm history << parameters.chart-name >> -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+            when: always
+    - when:
+        condition: << parameters.westRegion >>
+        steps:
+        - run:
+            name: Get the us-west-2 kubeconfig file
+            command: |
+              mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-west-2 update-kubeconfig --name jsnider-mtu-west-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+        - run:
+            name: Helm apply
+            command: helm upgrade --install << parameters.chart-name >> << parameters.chart-path >> -f <<parameters.path-to-values-file>> << parameters.helm-options >> -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+        - run:
+            name: Rollout status
+            command: |
+              set +e
+              for DEPLOYNAME in `kubectl get deployment -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                kubectl rollout status deployment/${DEPLOYNAME} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                if [[ $? -eq 1 ]]; then
+                  echo
+                  export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n << parameters.deployment-namespace >> -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                  for POD in `kubectl get pod --selector=${SELECTOR} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                    echo ${POD}
+                    kubectl get events --field-selector involvedObject.name=${POD} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                    echo
+                  done
+                  exit 1
+                else
+                  echo
+                  export SELECTOR=`kubectl get deployment ${DEPLOYNAME} -n << parameters.deployment-namespace >> -o wide --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $8}'`
+                  for POD in `kubectl get pod --selector=${SELECTOR} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig | sed 1d | awk '{print $1}' | tr '\n' ' '`; do
+                    echo ${POD}
+                    kubectl get events --field-selector involvedObject.name=${POD} -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                    echo
+                  done
+                fi
+              done
+        - run:
+            name: Helm history
+            command: helm history << parameters.chart-name >> -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+            when: always
+
+  trigger-rollback:
+    description: "Trigger a rollback if a helm release fails"
+    parameters:
+      prod:
+        type: enum
+        description: "Is the release in the prod cluster? true or false but as a string"
+        default: "false"
+        enum:
+          - "false"
+          - "true"
+      environment:
+        type: string
+        description: "Environment suffix on release name"
+        default: ""
+      helm-apply:
+        type: boolean
+        description: "Is this command running in the helm-apply job?"
+        default: false
+      chart-name:
+        type: string
+        description: "Chart name if running in helm-apply job"
+        default: ""
+      deployment-namespace:
+        type: string
+        description: "Namespace if running in helm-apply job"
+        default: ""
+    steps:
+      - when:
+          condition: << parameters.helm-apply >>
+          steps:
+            - run:
+                name: Check on helm release and trigger rollback
+                command: |
+                  STATUS=$(helm ls -a -n << parameters.deployment-namespace >> --kubeconfig=$HOME/.kube/kubeconfig | grep << parameters.chart-name >> | awk '{print $8}')
+                  set +e
+                  NONPROD_NS_EXISTS=$(kubectl get ns nonprod-jsnider-mtu-cluster --kubeconfig=$HOME/.kube/kubeconfig)
+                  set -e
+                  if [ -z "${NONPROD_NS_EXISTS}" ]; then
+                    PROD=true
+                  else
+                    PROD=false
+                  fi
+                  if [ ${STATUS} != "deployed" ]; then
+                    curl -H"Content-Type: application/json" -H"Accept: application/json" -u "${CIRCLE_TOKEN}:" \
+                    --data "{\"branch\":\"${CIRCLE_BRANCH}\",\"parameters\":{\"rollback\":true,\"chart-name\":\"<< parameters.chart-name >>\",\"prod\":\"${PROD}\",\"namespace\":\"<< parameters.deployment-namespace >>\",\"helm-apply\":true}}" \
+                    https://circleci.com/api/v2/project/bb/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/pipeline
+                  else
+                    echo "Helm release deployed successfully!"
+                  fi
+                when: always
+      - unless:
+          condition: << parameters.helm-apply >>
+          steps:
+            - run:
+                name: Check on helm release and trigger rollback
+                command: |
+                  STATUS=$(helm ls -a -n ${NS_PREFIX}-${NS_ENV} --kubeconfig=$HOME/.kube/kubeconfig | grep ${CHART}-<< parameters.environment >> | awk '{print $8}')
+                  if [ ${STATUS} != "deployed" ]; then
+                    curl -H"Content-Type: application/json" -H"Accept: application/json" -u "${CIRCLE_TOKEN}:" \
+                    --data "{\"branch\":\"${CIRCLE_BRANCH}\",\"parameters\":{\"rollback\":true,\"env\":\"<< parameters.environment >>\",\"chart-name\":\"${CHART}\",\"prod\":\"<< parameters.prod >>\",\"namespace\":\"${NS_PREFIX}-${NS_ENV}\"}}" \
+                    https://circleci.com/api/v2/project/bb/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/pipeline
+                  else
+                    echo "Helm release deployed successfully!"
+                  fi
+                when: always
+
+jobs:
+  plan:
+    executor:
+      name: default
+      resource-class: << parameters.resource-class >>
+    description: "Helm diff before upgrade"
+    parameters:
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+      environment:
+        type: enum
+        description: "Environment about to be upgraded (dev, qa, staging, or prod)"
+        enum:
+          - dev
+          - qa
+          - staging
+          - prod
+      namespace-prefix:
+        type: string
+        description: "Namespace Prefix"
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      valuesFile:
+        type: string
+        description: "name of your values file"
+        default: ""
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Populate TAG variable
+          command: echo 'export TAG=$(cat $HOME/tag)' >> $BASH_ENV
+      - run:
+          name: Set the path
+          command: echo 'export PATH=$HOME/bin:$PATH' >> $BASH_ENV
+      - run:
+          name: Populate CHART variable
+          command: echo 'export CHART=$(cat $HOME/chart_name)' >> $BASH_ENV
+      - run:
+          name: Set AWS keys
+          command: |
+            if [[ "<< parameters.environment >>" == "staging" || "<< parameters.environment >>" == "prod" ]]; then
+              echo 'export AWS_ACCESS_KEY_ID=$PROD_ACCESS_KEY_ID' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=$PROD_SECRET_ACCESS_KEY' >> $BASH_ENV
+            elif [[ "<< parameters.environment >>" == "dev" || "<< parameters.environment >>" == "qa" ]]; then
+              echo 'export AWS_ACCESS_KEY_ID=$NONPROD_ACCESS_KEY_ID' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=$NONPROD_SECRET_ACCESS_KEY' >> $BASH_ENV
+            else
+              echo "<< parameters.environment >> is not a valid environment"
+              exit 1
+            fi
+      - run:
+          name: Helm repo add
+          command: |
+            helm repo add jsnider-mtu https://jsnider-mtu.jfrog.io/jsnider-mtu/helm/ --username ${ARTIFACTORY_USER} --password ${ARTIFACTORY_PASS} --force-update
+            helm repo update
+            RESPONSE=$(helm search repo jsnider-mtu/${CHART} --version ${TAG} -l --devel)
+            if [[ "$RESPONSE" == "No results found" ]]; then
+              echo "Failed to find current version of chart; trying again after 60 seconds"
+              sleep 60
+              helm repo update
+              helm search repo jsnider-mtu/${CHART} --version ${TAG} -l --devel
+            fi
+      - when:
+          condition: << parameters.eastRegion >>
+          steps:
+          - run:
+              name: Get the us-east-1 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-east-1 update-kubeconfig --name jsnider-mtu-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Create namespace if it doesn't yet exist
+              command: |
+                set +e
+                kubectl create ns << parameters.namespace-prefix >>-<< parameters.environment >> --kubeconfig=$HOME/.kube/kubeconfig
+                exit 0
+          - run:
+              name: Helm diff upgrade
+              command: |
+                if [ "<< parameters.valuesFile >>" == "" ]; then
+                  if [ "<< parameters.environment >>" == "prod" ]; then
+                    helm diff upgrade ${CHART}-production jsnider-mtu/${CHART} --version ${TAG} --values << parameters.valuesFileDir >>/<< parameters.environment >>-values.yaml --allow-unreleased -n << parameters.namespace-prefix >>-production --kubeconfig=$HOME/.kube/kubeconfig
+                  else
+                    helm diff upgrade ${CHART}-<< parameters.environment >> jsnider-mtu/${CHART} --version ${TAG} --values << parameters.valuesFileDir >>/<< parameters.environment >>-values.yaml --allow-unreleased -n << parameters.namespace-prefix >>-<< parameters.environment >> --kubeconfig=$HOME/.kube/kubeconfig
+                  fi
+                else
+                  if [ "<< parameters.environment >>" == "prod" ]; then
+                    helm diff upgrade ${CHART}-production jsnider-mtu/${CHART} --version ${TAG} --values << parameters.valuesFileDir >>/<< parameters.valuesFile >> --allow-unreleased -n << parameters.namespace-prefix >>-production --kubeconfig=$HOME/.kube/kubeconfig
+                  else
+                    helm diff upgrade ${CHART}-<< parameters.environment >> jsnider-mtu/${CHART} --version ${TAG} --values << parameters.valuesFileDir >>/<< parameters.valuesFile >> --allow-unreleased -n << parameters.namespace-prefix >>-<< parameters.environment >> --kubeconfig=$HOME/.kube/kubeconfig
+                  fi
+                fi
+          - run:
+              name: Helm history
+              command: |
+                set +e
+                if [ "<< parameters.environment >>" == "prod" ]; then
+                  helm history ${CHART}-production -n << parameters.namespace-prefix >>-production --kubeconfig=$HOME/.kube/kubeconfig
+                else
+                  helm history ${CHART}-<< parameters.environment >> -n << parameters.namespace-prefix >>-<< parameters.environment >> --kubeconfig=$HOME/.kube/kubeconfig
+                fi
+                exit 0
+              when: always
+      - when:
+          condition: << parameters.westRegion >>
+          steps:
+          - run:
+              name: Get the us-west-2 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-west-2 update-kubeconfig --name jsnider-mtu-west-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Create namespace if it doesn't yet exist
+              command: |
+                set +e
+                kubectl create ns << parameters.namespace-prefix >>-<< parameters.environment >> --kubeconfig=$HOME/.kube/kubeconfig
+                exit 0
+          - run:
+              name: Helm diff upgrade
+              command: |
+                if [ "<< parameters.valuesFile >>" == "" ]; then
+                  if [ "<< parameters.environment >>" == "prod" ]; then
+                    helm diff upgrade ${CHART}-production jsnider-mtu/${CHART} --version ${TAG} --values << parameters.valuesFileDir >>/<< parameters.environment >>-values.yaml --allow-unreleased -n << parameters.namespace-prefix >>-production --kubeconfig=$HOME/.kube/kubeconfig
+                  else
+                    helm diff upgrade ${CHART}-<< parameters.environment >> jsnider-mtu/${CHART} --version ${TAG} --values << parameters.valuesFileDir >>/<< parameters.environment >>-values.yaml --allow-unreleased -n << parameters.namespace-prefix >>-<< parameters.environment >> --kubeconfig=$HOME/.kube/kubeconfig
+                  fi
+                else
+                  if [ "<< parameters.environment >>" == "prod" ]; then
+                    helm diff upgrade ${CHART}-production jsnider-mtu/${CHART} --version ${TAG} --values << parameters.valuesFileDir >>/<< parameters.valuesFile >> --allow-unreleased -n << parameters.namespace-prefix >>-production --kubeconfig=$HOME/.kube/kubeconfig
+                  else
+                    helm diff upgrade ${CHART}-<< parameters.environment >> jsnider-mtu/${CHART} --version ${TAG} --values << parameters.valuesFileDir >>/<< parameters.valuesFile >> --allow-unreleased -n << parameters.namespace-prefix >>-<< parameters.environment >> --kubeconfig=$HOME/.kube/kubeconfig
+                  fi
+                fi
+          - run:
+              name: Helm history
+              command: |
+                set +e
+                if [ "<< parameters.environment >>" == "prod" ]; then
+                  helm history ${CHART}-production -n << parameters.namespace-prefix >>-production --kubeconfig=$HOME/.kube/kubeconfig
+                else
+                  helm history ${CHART}-<< parameters.environment >> -n << parameters.namespace-prefix >>-<< parameters.environment >> --kubeconfig=$HOME/.kube/kubeconfig
+                fi
+                exit 0
+              when: always
+  rollback:
+    executor:
+      name: default
+      resource-class: << parameters.resource-class >>
+    description: "Rollback command to be run via API call"
+    parameters:
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+      release:
+        type: string
+        description: "Helm release name"
+        default: ""
+      prod:
+        type: enum
+        description: "Whether helm release is in production cluster"
+        default: "false"
+        enum:
+        - "false"
+        - "true"
+      revision:
+        type: integer
+        description: "Helm revision number"
+        default: 0
+      namespace:
+        type: string
+        description: "Namespace where helm release lives (if different than release name)"
+        default: ""
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - run:
+          name: Set the path
+          command: echo 'export PATH=$HOME/bin:$PATH' >> $BASH_ENV
+      - run:
+          name: Set AWS keys
+          command: |
+            if [ "<< parameters.prod >>" == "true" ]; then
+              echo 'export AWS_ACCESS_KEY_ID=$PROD_ACCESS_KEY_ID' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=$PROD_SECRET_ACCESS_KEY' >> $BASH_ENV
+            else
+              echo 'export AWS_ACCESS_KEY_ID=$NONPROD_ACCESS_KEY_ID' >> $BASH_ENV && echo 'export AWS_SECRET_ACCESS_KEY=$NONPROD_SECRET_ACCESS_KEY' >> $BASH_ENV
+            fi
+      - when:
+          condition: << parameters.eastRegion >>
+          steps:
+          - run:
+              name: Get the us-east-1 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-east-1 update-kubeconfig --name jsnider-mtu-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Rollback
+              command: |
+                if [ -z << parameters.namespace >> ]; then
+                  helm rollback << parameters.release >> << parameters.revision >> -n << parameters.release >> --kubeconfig=$HOME/.kube/kubeconfig
+                else
+                  helm rollback << parameters.release >> << parameters.revision >> -n << parameters.namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                fi
+          - run:
+              name: Helm history
+              command: |
+                if [ -z << parameters.namespace >> ]; then
+                  helm history << parameters.release >> -n << parameters.release >> --kubeconfig=$HOME/.kube/kubeconfig
+                else
+                  helm history << parameters.release >> -n << parameters.namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                fi
+      - when:
+          condition: << parameters.westRegion >>
+          steps:
+          - run:
+              name: Get the us-west-2 kubeconfig file
+              command: |
+                mkdir -p $HOME/.kube && export KUBECONFIG=$HOME/.kube/kubeconfig && ~/bin/aws eks --region us-west-2 update-kubeconfig --name jsnider-mtu-west-cluster --kubeconfig $HOME/.kube/kubeconfig && chmod 700 $HOME/.kube/kubeconfig
+          - run:
+              name: Rollback
+              command: |
+                if [ -z << parameters.namespace >> ]; then
+                  helm rollback << parameters.release >> << parameters.revision >> -n << parameters.release >> --kubeconfig=$HOME/.kube/kubeconfig
+                else
+                  helm rollback << parameters.release >> << parameters.revision >> -n << parameters.namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                fi
+          - run:
+              name: Helm history
+              command: |
+                if [ -z << parameters.namespace >> ]; then
+                  helm history << parameters.release >> -n << parameters.release >> --kubeconfig=$HOME/.kube/kubeconfig
+                else
+                  helm history << parameters.release >> -n << parameters.namespace >> --kubeconfig=$HOME/.kube/kubeconfig
+                fi
+  packagenpushchart:
+    executor:
+      name: default
+      resource-class: << parameters.resource-class >>
+    description: "Package and push helm chart to Artifactory"
+    parameters:
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+      enable-slack:
+        type: boolean
+        description: "Whether to send a Slack notification at end of job (requires env var SLACK_WEBHOOK)"
+        default: false
+      channel-override:
+        type: boolean
+        description: "Whether to override the Slack channel used by SLACK_WEBHOOK. Be sure to also set the parameter slack-channel"
+        default: false
+      slack-channel:
+        type: string
+        description: "Slack channel to send alert to"
+        default: ""
+      path:
+        type: string
+        description: "Path to chart directory"
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      generate-chart:
+        type: boolean
+        description: "Whether to generate the helm chart from a default template"
+        default: false
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /home/circleci
+      - packagenpushchart:
+          path: << parameters.path >>
+          generate-chart: << parameters.generate-chart >>
+          valuesFileDir: "<< parameters.valuesFileDir >>"
+      - persist_to_workspace:
+          root: /home/circleci
+          paths:
+            - "*"
+      - when:
+          condition: << parameters.enable-slack >>
+          steps:
+            - when:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status:
+                      channel: << parameters.slack-channel >>
+            - unless:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status
+  deployToDev:
+    executor:
+      name: default
+      resource-class: << parameters.resource-class >>
+    description: "Deploy helm chart to the development environment"
+    parameters:
+      helmFlags:
+        type: string
+        description: "Flags passed to helm"
+        default: "[]"
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+      enable-slack:
+        type: boolean
+        description: "Whether to send a Slack notification at end of job (requires env var SLACK_WEBHOOK)"
+        default: false
+      channel-override:
+        type: boolean
+        description: "Whether to override the Slack channel used by SLACK_WEBHOOK. Be sure to also set the parameter slack-channel"
+        default: false
+      slack-channel:
+        type: string
+        description: "Slack channel to send alert to"
+        default: ""
+      namespace-prefix:
+        type: string
+        description: "Namespace Prefix"
+      noHooks:
+        type: boolean
+        description: "disable pre/post upgrade hooks"
+        default: false
+      timeout:
+        type: integer
+        description: "time to wait for any individual Kubernetes operation"
+        default: 300
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      valuesFile:
+        type: string
+        description: "name of your values file"
+        default: "dev-values.yaml"
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+      wait:
+        type: boolean
+        description: "Enable to have helm wait for resources to become ready before finishing"
+        default: true
+      trigger-rollback:
+        type: boolean
+        description: "Trigger rollback if deployment fails?"
+        default: false
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /home/circleci
+      - deploytodev:
+          namespace-prefix: << parameters.namespace-prefix >>
+          noHooks: << parameters.noHooks >>
+          timeout: << parameters.timeout >>
+          valuesFileDir: "<< parameters.valuesFileDir >>"
+          valuesFile: "<< parameters.valuesFile >>"
+          no_output_timeout: "<< parameters.no_output_timeout >>"
+          wait: << parameters.wait >>
+          eastRegion: << parameters.eastRegion >>
+          westRegion: << parameters.westRegion >>
+      - when:
+          condition: << parameters.trigger-rollback >>
+          steps:
+            - trigger-rollback:
+                environment: dev
+      - when:
+          condition: << parameters.enable-slack >>
+          steps:
+            - when:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status:
+                      channel: << parameters.slack-channel >>
+            - unless:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status
+  deployToQA:
+    executor:
+      name: default
+      resource-class: << parameters.resource-class >>
+    description: "Deploy helm chart to the QA environment"
+    parameters:
+      helmFlags:
+        type: string
+        description: "Flags passed to helm"
+        default: "[]"
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+      enable-slack:
+        type: boolean
+        description: "Whether to send a Slack notification at end of job (requires env var SLACK_WEBHOOK)"
+        default: false
+      channel-override:
+        type: boolean
+        description: "Whether to override the Slack channel used by SLACK_WEBHOOK. Be sure to also set the parameter slack-channel"
+        default: false
+      slack-channel:
+        type: string
+        description: "Slack channel to send alert to"
+        default: ""
+      namespace-prefix:
+        type: string
+        description: "Namespace Prefix"
+      noHooks:
+        type: boolean
+        description: "disable pre/post upgrade hooks"
+        default: false
+      timeout:
+        type: integer
+        description: "time to wait for any individual Kubernetes operation"
+        default: 300
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      valuesFile:
+        type: string
+        description: "name of your values file"
+        default: "qa-values.yaml"
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+      wait:
+        type: boolean
+        description: "Enable to have helm wait for resources to become ready before finishing"
+        default: true
+      trigger-rollback:
+        type: boolean
+        description: "Trigger rollback if deployment fails?"
+        default: false
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /home/circleci
+      - deploytoqa:
+          namespace-prefix: << parameters.namespace-prefix >>
+          noHooks: << parameters.noHooks >>
+          timeout: << parameters.timeout >>
+          valuesFileDir: "<< parameters.valuesFileDir >>"
+          valuesFile: "<< parameters.valuesFile >>"
+          no_output_timeout: "<< parameters.no_output_timeout >>"
+          wait: << parameters.wait >>
+          eastRegion: << parameters.eastRegion >>
+          westRegion: << parameters.westRegion >>
+      - when:
+          condition: << parameters.trigger-rollback >>
+          steps:
+            - trigger-rollback:
+                environment: qa
+      - when:
+          condition: << parameters.enable-slack >>
+          steps:
+            - when:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status:
+                      channel: << parameters.slack-channel >>
+            - unless:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status
+  deployToStaging:
+    executor:
+      name: default
+      resource-class: << parameters.resource-class >>
+    description: "Deploy helm chart to the staging environment"
+    parameters:
+      helmFlags:
+        type: string
+        description: "Flags passed to helm"
+        default: "[]"
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+      enable-slack:
+        type: boolean
+        description: "Whether to send a Slack notification at end of job (requires env var SLACK_WEBHOOK)"
+        default: false
+      channel-override:
+        type: boolean
+        description: "Whether to override the Slack channel used by SLACK_WEBHOOK. Be sure to also set the parameter slack-channel"
+        default: false
+      slack-channel:
+        type: string
+        description: "Slack channel to send alert to"
+        default: ""
+      namespace-prefix:
+        type: string
+        description: "Namespace Prefix"
+      noHooks:
+        type: boolean
+        description: "disable pre/post upgrade hooks"
+        default: false
+      timeout:
+        type: integer
+        description: "time to wait for any individual Kubernetes operation"
+        default: 300
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      valuesFile:
+        type: string
+        description: "name of your values file"
+        default: "staging-values.yaml"
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+      wait:
+        type: boolean
+        description: "Enable to have helm wait for resources to become ready before finishing"
+        default: true
+      trigger-rollback:
+        type: boolean
+        description: "Trigger rollback if deployment fails?"
+        default: false
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /home/circleci
+      - deploytostaging:
+          namespace-prefix: << parameters.namespace-prefix >>
+          noHooks: << parameters.noHooks >>
+          timeout: << parameters.timeout >>
+          valuesFileDir: "<< parameters.valuesFileDir >>"
+          valuesFile: "<< parameters.valuesFile >>"
+          no_output_timeout: "<< parameters.no_output_timeout >>"
+          wait: << parameters.wait >>
+          eastRegion: << parameters.eastRegion >>
+          westRegion: << parameters.westRegion >>
+      - when:
+          condition: << parameters.trigger-rollback >>
+          steps:
+            - trigger-rollback:
+                prod: "true"
+                environment: staging
+      - when:
+          condition: << parameters.enable-slack >>
+          steps:
+            - when:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status:
+                      channel: << parameters.slack-channel >>
+            - unless:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status
+  deployToProd:
+    executor:
+      name: default
+      resource-class: << parameters.resource-class >>
+    description: "Deploy helm chart to the production environment"
+    parameters:
+      helmFlags:
+        type: string
+        description: "Flags passed to helm"
+        default: "[]"
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+      enable-slack:
+        type: boolean
+        description: "Whether to send a Slack notification at end of job (requires env var SLACK_WEBHOOK)"
+        default: false
+      channel-override:
+        type: boolean
+        description: "Whether to override the Slack channel used by SLACK_WEBHOOK. Be sure to also set the parameter slack-channel"
+        default: false
+      slack-channel:
+        type: string
+        description: "Slack channel to send alert to"
+        default: ""
+      namespace-prefix:
+        type: string
+        description: "Namespace Prefix"
+      env-name:
+        type: string
+        description: "Use if this helm chart was deployed outside of helmsman and the env is prod instead of production."
+        default: "production"
+      noHooks:
+        type: boolean
+        description: "disable pre/post upgrade hooks"
+        default: false
+      timeout:
+        type: integer
+        description: "time to wait for any individual Kubernetes operation"
+        default: 300
+      valuesFileDir:
+        type: string
+        description: "Point to different values directory"
+        default: ./valuesFiles
+      valuesFile:
+        type: string
+        description: "name of your values file"
+        default: "prod-values.yaml"
+      no_output_timeout:
+        type: string
+        description: CircleCI command timeout
+        default: 10m
+      wait:
+        type: boolean
+        description: "Enable to have helm wait for resources to become ready before finishing"
+        default: true
+      trigger-rollback:
+        type: boolean
+        description: "Trigger rollback if deployment fails?"
+        default: false
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /home/circleci
+      - deploytoprod:
+          namespace-prefix: << parameters.namespace-prefix >>
+          noHooks: << parameters.noHooks >>
+          timeout: << parameters.timeout >>
+          valuesFileDir: "<< parameters.valuesFileDir >>"
+          valuesFile: "<< parameters.valuesFile >>"
+          no_output_timeout: "<< parameters.no_output_timeout >>"
+          env-name: << parameters.env-name >>
+          wait: << parameters.wait >>
+          eastRegion: << parameters.eastRegion >>
+          westRegion: << parameters.westRegion >>
+      - when:
+          condition: << parameters.trigger-rollback >>
+          steps:
+            - trigger-rollback:
+                prod: "true"
+                environment: production
+      - when:
+          condition: << parameters.enable-slack >>
+          steps:
+            - when:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status:
+                      channel: << parameters.slack-channel >>
+            - unless:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status
+
+  helm-diff:
+    executor:
+      name: default
+      resource-class: << parameters.resource-class >>
+    description: "Helm diff to verify deployment"
+    parameters:
+      update-tag:
+        type: boolean
+        default: true
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+      path-to-values-file:
+        type: string
+      helm-options:
+        type: string
+        default: ""
+      aws-key:
+        type: string
+      aws-secret:
+        type: string
+      chart-name:
+        type: string
+      deployment-namespace:
+        type: string
+      chart-path:
+        type: string
+        default: "."
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /home/circleci
+      - helm-diff:
+          path-to-values-file: << parameters.path-to-values-file >>
+          helm-options: << parameters.helm-options >>
+          aws-key: << parameters.aws-key >>
+          aws-secret: "<< parameters.aws-secret >>"
+          chart-name: << parameters.chart-name >>
+          deployment-namespace: << parameters.deployment-namespace >>
+          chart-path: << parameters.chart-path >>
+          update-tag: << parameters.update-tag >>
+          eastRegion: << parameters.eastRegion >>
+          westRegion: << parameters.westRegion >>
+  helm-apply:
+    executor:
+      name: default
+      resource-class: << parameters.resource-class >>
+    description: "Helm diff to verify deployment"
+    parameters:
+      update-tag:
+        type: boolean
+        default: true
+      resource-class:
+        type: string
+        description: "Size of executor"
+        default: "small"
+      path-to-values-file:
+        type: string
+      helm-options:
+        type: string
+        default: "--wait --timeout 300s --debug"
+      aws-key:
+        type: string
+      aws-secret:
+        type: string
+      chart-name:
+        type: string
+      deployment-namespace:
+        type: string
+      chart-path:
+        type: string
+        default: "."
+      enable-slack:
+        type: boolean
+        description: "Whether to send a Slack notification at end of job (requires env var SLACK_WEBHOOK)"
+        default: false
+      channel-override:
+        type: boolean
+        description: "Whether to override the Slack channel used by SLACK_WEBHOOK. Be sure to also set the parameter slack-channel"
+        default: false
+      slack-channel:
+        type: string
+        description: "Slack channel to send alert to"
+        default: ""
+      trigger-rollback:
+        type: boolean
+        description: "Trigger rollback if deployment fails?"
+        default: false
+      eastRegion:
+        type: boolean
+        description: "Deploy to us-east-1"
+        default: true
+      westRegion:
+        type: boolean
+        description: "Deploy to us-west-2"
+        default: false
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /home/circleci
+      - helm-apply:
+          path-to-values-file: << parameters.path-to-values-file >>
+          helm-options: << parameters.helm-options >>
+          aws-key: << parameters.aws-key >>
+          aws-secret: "<< parameters.aws-secret >>"
+          chart-name: << parameters.chart-name >>
+          deployment-namespace: << parameters.deployment-namespace >>
+          chart-path: << parameters.chart-path >>
+          update-tag: << parameters.update-tag >>
+          eastRegion: << parameters.eastRegion >>
+          westRegion: << parameters.westRegion >>
+      - when:
+          condition: << parameters.trigger-rollback >>
+          steps:
+            - trigger-rollback:
+                helm-apply: true
+                chart-name: << parameters.chart-name >>
+                deployment-namespace: << parameters.deployment-namespace >>
+      - when:
+          condition: << parameters.enable-slack >>
+          steps:
+            - when:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status:
+                      channel: << parameters.slack-channel >>
+            - unless:
+                condition: << parameters.channel-override >>
+                steps:
+                  - slack/status
