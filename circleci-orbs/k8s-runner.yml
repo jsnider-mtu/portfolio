@@ -341,10 +341,10 @@ commands:
     parameters:
       from:
         type: string
-        description: Source in pod (absolute path)
+        description: Source in pod or circleci container (absolute path)
       to:
         type: string
-        description: Destination in CircleCI container (absolute path)
+        description: Destination in CircleCI container or pod (absolute path)
       to_pod:
         type: boolean
         description: Copy from CircleCI container to onprem pod
