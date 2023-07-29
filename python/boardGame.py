@@ -21,9 +21,10 @@ A level is defined by a map, a scroll, avatar position, portal position,
 a number of crystals each with a position, modifier tokens, and command
 tokens.
 
-level = [map index, scroll ind, apos, ppos, crystals, mods, coms]
-mods = [1, 2, 3, 4, 5, 6, 'o', 'p']
-coms = {red = 0: #, blue = 1: #, green = 2: #}
+level = [map index, scroll index, avatar position, portal position, crystals,
+            modifier tokens, command tokens]
+modifier tokens = [1, 2, 3, 4, 5, 6, 'o', 'p']  # o and p for orange and purple
+command tokens = {0: number of tokens, 1: , 2: }  # red = 0, blue = 1, green = 2
 
 A scroll is run through in sequence, and at conditionals can move the seq pointer
 back to a previous position.
@@ -34,7 +35,7 @@ Execution steps:
 Execute command at current position of scroll pointer or check conditional
 Move player to next position if command and then move the scroll pointer
 Check for crystals and pick up one if can
-If scroll pointer == portal, check that avatar is at ppos for win
+If scroll pointer == portal, check that avatar is at portal position for win
 If so then check crystal count for win
 
 Solutions:
@@ -107,18 +108,17 @@ readline.parse_and_bind("set editing-mode vim")
 
 
 def ending():
-    ans = input("Would you like to play again? ")
-    if not ans or ans[0].lower() != "y":
+    play_again = input("Would you like to play again? ")
+    if not play_again or play_again[0].lower() != "y":
         sys.exit(2)
-    ans = input("What level would you like to play? ")
-    while not ans.isdigit():
-        ans = input("What level would you like to play? ")
-    n = ans
-    game(n)
+    level = input("What level would you like to play? ")
+    while not level.isdigit():
+        level = input("What level would you like to play? ")
+    game(level)
 
 
-def mapimage(n):
-    if n == 0:
+def mapimage(map):
+    if map == 0:
         print("  \033[32m__________ ")
         print(" /          \ ")
         print("(            )    ")
@@ -132,7 +132,7 @@ def mapimage(n):
         print("\033[34m(            ) ")
         print(" \          / ")
         print("  ~~~~~~~~~~\033[0m ")
-    elif n == 1:
+    elif map == 1:
         print("       \033[0m0\033[32m-, ")
         print('      \033[34m/\033[31m|  \033[32m"-, ')
         print('     \033[34m/ \033[31m|     \033[32m"-, ')
@@ -150,7 +150,7 @@ def mapimage(n):
         print('             \033[31m"-,     \033[32m| \033[34m/ ')
         print('                \033[31m"-,  \033[32m|\033[34m/ ')
         print('                   \033[31m"-\033[0m5 ')
-    elif n == 2:
+    elif map == 2:
         print("\033[31m,---------\033[0m1\033[34m------------------\033[0m2 ")
         print("\033[35m0\033[32m---------'              \033[31m,--'\033[32m| ")
         print("\033[34m|                    \033[31m,--'    \033[32m| ")
@@ -160,7 +160,7 @@ def mapimage(n):
         print("\033[34m|    \033[31m,--'                    \033[32m| ")
         print("\033[34m|\033[31m,--'            ,-----------\033[0m5 ")
         print("3\033[32m----------------\033[33m4\033[34m-----------'\033[0m ")
-    elif n == 3:
+    elif map == 3:
         print(" \033[34m_ ")
         print("(/                   \033[35m5 ")
         print("0\033[32m,                  /\033[34m|\033[31m\ ")
@@ -173,7 +173,7 @@ def mapimage(n):
             "            \033[34m'-\033[0m2\033[31m------\033[0m3\033[32m------\033[0m4 "
         )
         print("                           \033[34m/_\ \033[0m ")
-    elif n == 4:
+    elif map == 4:
         print("   \033[34m__________________________ ")
         print("  /                          \ ")
         print(" /     \033[32m,--\033[0m1\033[34m-,              \033[31m,--\033[0m4 ")
@@ -191,7 +191,7 @@ def mapimage(n):
         )
         print("  \033[31m\                                          | ")
         print("   '-----------------------------------------'\033[0m ")
-    elif n == 5:
+    elif map == 5:
         print(
             "           \033[31m,--\033[33m1\033[34m-----------------------\033[0m3\033[31m--, "
         )
@@ -225,7 +225,7 @@ def mapimage(n):
         print(
             "           `--\033[35m2\033[34m-----------------------\033[33m4\033[31m--'\033[0m "
         )
-    elif n == 6:
+    elif map == 6:
         print("             \033[34m,-\033[0m2\033[31m-, ")
         print("         \033[34m,--'  \033[32m|  \033[31m'--, ")
         print("     \033[34m,--'      \033[32m|      \033[31m'--, ")
@@ -254,7 +254,7 @@ def mapimage(n):
         print("     \033[31m'--,      \033[34m|      \033[32m,--' ")
         print("         \033[31m'--,  \033[34m|  \033[32m,--' ")
         print("             \033[31m'-\033[0m4\033[32m-'\033[0m ")
-    elif n == 7:
+    elif map == 7:
         print("               \033[31m_ ")
         print("              \ / ")
         print("             \033[32m,-\033[0m0\033[34m-, ")
@@ -281,7 +281,7 @@ def mapimage(n):
             " \033[0m8\033[31m-------\033[33m9\033[34m->->->->->-\033[33m10\033[31m-------\033[0m11 "
         )
         print("\033[34m/_\                          \033[32m/_|\033[0m ")
-    elif n == 8:
+    elif map == 8:
         print("     \033[32m,------\033[0m0\033[31m------, ")
         print("    \033[32m/      \033[34m< \033[32m<      \033[31m\ ")
         print("   \033[32m/      \033[34m<   \033[32m<      \033[31m\ ")
@@ -314,7 +314,7 @@ def mapimage(n):
         print("\033[34m(       '-------'       ) ")
         print(" \                     / ")
         print("  '-------------------'\033[0m ")
-    elif n == 9:
+    elif map == 9:
         print("            \033[31m_ ")
         print("           \ / ")
         print("          \033[32m,-\033[0m2\033[34m-, ")
@@ -337,18 +337,18 @@ def mapimage(n):
         print("           \033[31m/_\ \033[0m ")
 
 
-def move(n, mapn, apos):
+def move(color, map_number, avatar_position):
     try:
-        pos = mapn[apos][n]
-        print("Moving from %d to %d" % (apos, pos))
-        return pos
+        new_position = map_number[avatar_position][color]
+        print("Moving from %d to %d" % (avatar_position, new_position))
+        return position
     except TypeError:
         print("No path that way, you lose.\nTry again.")
         ending()
 
 
-def scrollimage(n):
-    if n == 0:
+def scrollimage(scroll):
+    if scroll == 0:
         print("                                                   ____ ")
         print("   O       __        __        __        __      .' __ `. ")
         print("  /H\    ,'  `.    ,'  `.    ,'  `.    ,'  `.    | /.,\ | ")
@@ -356,7 +356,7 @@ def scrollimage(n):
         print("  / \    '.__.'    '.__.'    '.__.'    '.__.'    | ,__/ | ")
         print(" /   \                                           '.____.' ")
         print("                                                 /______\ ")
-    elif n == 1:
+    elif scroll == 1:
         print("                                                             ____ ")
         print("   O       __        __        __        __        __      .' __ `. ")
         print("  /H\    ,'  `.    ,'  `.    ,'  `.    ,'  `.    ,'  `.    | /.,\ | ")
@@ -364,7 +364,7 @@ def scrollimage(n):
         print("  / \    '.__.'    '.__.'    '.__.'    '.__.'    '.__.'    | ,__/ | ")
         print(" /   \                                                     '.____.' ")
         print("                                                           /______\ ")
-    elif n == 2:
+    elif scroll == 2:
         print(
             "                                                                       ____ "
         )
@@ -386,7 +386,7 @@ def scrollimage(n):
         print(
             "                                                                     /______\ "
         )
-    elif n == 3:
+    elif scroll == 3:
         print("           <-<-<-<-<-<-<-<-<-<-<-<-<-<-<-< ")
         print("           |                             | ")
         print("           v                             \033[31mF\033[0m         ____ ")
@@ -398,7 +398,7 @@ def scrollimage(n):
         print("  / \    '.__.'    '.__.'    '.__.'     \  /     | ,__/ | ")
         print(" /   \                                   vv      '.____.' ")
         print("                                                 /______\ ")
-    elif n == 4:
+    elif scroll == 4:
         print(
             "                                                                                 ____ "
         )
@@ -420,7 +420,7 @@ def scrollimage(n):
         print(
             "                                                                               /______\ "
         )
-    elif n == 5:
+    elif scroll == 5:
         print("           <-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<- ")
         print("           |                                      | ")
         print(
@@ -434,7 +434,7 @@ def scrollimage(n):
         print("  / \    '.__.'    '.__.'    '.__.'   '.__.'     \  /      | ,__/ | ")
         print(" /   \                                            vv       '.____.' ")
         print("                                                           /______\ ")
-    elif n == 6:
+    elif scroll == 6:
         print("                     <-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<- ")
         print("                     |                              | ")
         print("                     v                              | ")
@@ -453,7 +453,7 @@ def scrollimage(n):
         print("                            '.__.'    '.__.'    | ,__/ | ")
         print("                                                '.____.' ")
         print("                                                /______\ ")
-    elif n == 7:
+    elif scroll == 7:
         print("          <-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-< ")
         print("          |                                   | ")
         print("          |                __                 | ")
@@ -476,7 +476,7 @@ def scrollimage(n):
         print("                 |     .'  `.       | ")
         print("                 >->-> |  2 | >->->-> ")
         print("                       '.__.' ")
-    elif n == 8:
+    elif scroll == 8:
         print("           <-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<- ")
         print("           |                                        | ")
         print("           v                                        | ")
@@ -495,7 +495,7 @@ def scrollimage(n):
         print("                  '.__.'    '.__.'    '.__.'    | ,__/ | ")
         print("                                                '.____.' ")
         print("                                                /______\ ")
-    elif n == 9:
+    elif scroll == 9:
         print("           <-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<- ")
         print("           |                                      | ")
         print(
@@ -509,7 +509,7 @@ def scrollimage(n):
         print("  / \    '.__.'    '.__.'    '.__.'   '.__.'     \  /      | ,__/ | ")
         print(" /   \                                            vv       '.____.' ")
         print("                                                           /______\ ")
-    elif n == 10:
+    elif scroll == 10:
         print("            <-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-< ")
         print("            |                                       | ")
         print("            |                    __                 | ")
@@ -532,7 +532,7 @@ def scrollimage(n):
         print("                       |     .'  `.       | ")
         print("                       >->-> |  3 | >->->-> ")
         print("                             '.__.' ")
-    elif n == 11:
+    elif scroll == 11:
         print("                 <-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-< ")
         print("                 |                                 | ")
         print("                 v                                 \033[31mF\033[0m ")
@@ -555,7 +555,7 @@ def scrollimage(n):
         print("                                      '.__.'   /______\ ")
 
 
-def game(n="NaN"):
+def game(level_number="NaN"):
     maps = [
         [
             [1, 4, 2, 1],
@@ -736,56 +736,56 @@ def game(n="NaN"):
         [9, 8, 8, 9, [2, 9], [2], {0: 3, 1: 2, 2: 2}],
     ]
 
-    if not n.isdigit():
-        ans = input("What level would you like to play? ")
-        while not ans.isdigit():
-            ans = input("What level would you like to play? ")
-        if int(ans) < 1 or int(ans) > 60:
+    if not level_number.isdigit():
+        level_number = input("What level would you like to play? ")
+        while not level_number.isdigit():
+            level_number = input("What level would you like to play? ")
+        if int(level_number) < 1 or int(level_number) > 60:
             print("Not a level")
             ending()
-        level = levels[int(ans) - 1]
+        level = levels[int(level_number) - 1]
     else:
-        if int(n) < 1 or int(n) > 60:
+        if int(level_number) < 1 or int(level_number) > 60:
             print("Not a level")
             ending()
-        level = levels[int(n) - 1]
-    mapn = maps[level[0]]
+        level = levels[int(level_number) - 1]
+    map_number = maps[level[0]]
     scroll = scrolls[level[1]]
-    apos = level[2]
-    ppos = level[3]
-    crystalsp = level[4]
-    if crystalsp:
-        crystalsc = len(crystalsp)
+    avatar_position = level[2]
+    portal_position = level[3]
+    crystal_positions = level[4]
+    if crystal_positions:
+        crystals_count = len(crystal_positions)
     else:
-        crystalsc = 0
-    mods = level[5]
-    comsav = level[6]
+        crystals_count = 0
+    modifier_tokens = level[5]
+    commands_available = level[6]
     os.system("clear")
     print("You are playing on map %d with scroll %d\n" % (level[0] + 1, level[1] + 1))
     mapimage(level[0])
-    print("\nYou are starting at %d and the portal is at %d\n" % (apos, ppos))
-    print("There are crystals in these locations: " + str(crystalsp))
-    print("You have these mods: " + str(mods))
+    print("\nYou are starting at %d and the portal is at %d\n" % (avatar_position, portal_position))
+    print("There are crystals in these locations: " + str(crystal_positions))
+    print("You have these mods: " + str(modifier_tokens))
     print(
-        "You have %d reds, %d blues, and %d greens" % (comsav[0], comsav[1], comsav[2])
+        "You have %d reds, %d blues, and %d greens" % (commands_available[0], commands_available[1], commands_available[2])
     )
     scrollimage(level[1])
-    coms = input("Please input the order of tokens (rbg123456op): ")
-    while len(coms) != scroll[0]:
-        coms = input("Please input the order of tokens (rbg123456op): ")
+    commands = input("Please input the order of tokens (rbg123456op): ")
+    while len(commands) != scroll[0]:
+        commands = input("Please input the order of tokens (rbg123456op): ")
     # Ensure that the input is valid given tokens in play
-    if coms.count("r") != comsav[0]:
+    if commands.count("r") != commands_available[0]:
         print("Not a valid command sequence")
         ending()
-    elif coms.count("b") != comsav[1]:
+    elif commands.count("b") != commands_available[1]:
         print("Not a valid command sequence")
         ending()
-    elif coms.count("g") != comsav[2]:
+    elif commands.count("g") != commands_available[2]:
         print("Not a valid command sequence")
         ending()
-    if mods:
-        for k in mods:
-            if coms.count(str(k)) != 1:
+    if modifier_tokens:
+        for token in modifier_tokens:
+            if commands.count(str(token)) != 1:
                 print("Not a valid command sequence")
                 ending()
     # begin level
@@ -796,11 +796,11 @@ def game(n="NaN"):
         rotation += 1
         if scrollp in scroll[1]:
             if isinstance(scroll[1][scrollp], tuple):
-                # Ensure conditional in this position of coms and then test
-                if coms[scrollp] not in "123456op":
+                # Ensure conditional in this position of commands and then test
+                if commands[scrollp] not in "123456op":
                     print("There should be a conditional at " + str(scrollp))
                     ending()
-                if coms[scrollp] == "1":
+                if commands[scrollp] == "1":
                     if crystals == 1:
                         print("You have 1 crystal!")
                         scrollp = scroll[1][scrollp][0]
@@ -809,7 +809,7 @@ def game(n="NaN"):
                         print("You do not have 1 crystal!")
                         scrollp = scroll[1][scrollp][1]
                         continue
-                elif coms[scrollp] == "2":
+                elif commands[scrollp] == "2":
                     if crystals == 2:
                         print("You have 2 crystals!")
                         scrollp = scroll[1][scrollp][0]
@@ -818,7 +818,7 @@ def game(n="NaN"):
                         print("You do not have 2 crystals!")
                         scrollp = scroll[1][scrollp][1]
                         continue
-                elif coms[scrollp] == "3":
+                elif commands[scrollp] == "3":
                     if crystals == 3:
                         print("You have 3 crystals!")
                         scrollp = scroll[1][scrollp][0]
@@ -827,7 +827,7 @@ def game(n="NaN"):
                         print("You do not have 3 crystals!")
                         scrollp = scroll[1][scrollp][1]
                         continue
-                elif coms[scrollp] == "4":
+                elif commands[scrollp] == "4":
                     if crystals == 4:
                         print("You have 4 crystals!")
                         scrollp = scroll[1][scrollp][0]
@@ -836,7 +836,7 @@ def game(n="NaN"):
                         print("You do not have 4 crystals!")
                         scrollp = scroll[1][scrollp][1]
                         continue
-                elif coms[scrollp] == "5":
+                elif commands[scrollp] == "5":
                     if crystals == 5:
                         print("You have 5 crystals!")
                         scrollp = scroll[1][scrollp][0]
@@ -845,7 +845,7 @@ def game(n="NaN"):
                         print("You do not have 5 crystals!")
                         scrollp = scroll[1][scrollp][1]
                         continue
-                elif coms[scrollp] == "6":
+                elif commands[scrollp] == "6":
                     if crystals == 6:
                         print("You have 6 crystals!")
                         scrollp = scroll[1][scrollp][0]
@@ -854,8 +854,8 @@ def game(n="NaN"):
                         print("You do not have 6 crystals!")
                         scrollp = scroll[1][scrollp][1]
                         continue
-                elif coms[scrollp] == "o":
-                    if mapn[apos][3] == 2:
+                elif commands[scrollp] == "o":
+                    if map_number[avatar_position][3] == 2:
                         print("This is an orange spot!")
                         scrollp = scroll[1][scrollp][0]
                         continue
@@ -863,8 +863,8 @@ def game(n="NaN"):
                         print("This is not an orange spot!")
                         scrollp = scroll[1][scrollp][1]
                         continue
-                elif coms[scrollp] == "p":
-                    if mapn[apos][3] == 1:
+                elif commands[scrollp] == "p":
+                    if map_number[avatar_position][3] == 1:
                         print("This is a purple spot!")
                         scrollp = scroll[1][scrollp][0]
                         continue
@@ -874,34 +874,34 @@ def game(n="NaN"):
                         continue
             else:
                 # else run command and then move scrollp to new destination
-                if coms[scrollp] == "r":
-                    apos = move(0, mapn, apos)
-                elif coms[scrollp] == "b":
-                    apos = move(1, mapn, apos)
-                elif coms[scrollp] == "g":
-                    apos = move(2, mapn, apos)
+                if commands[scrollp] == "r":
+                    avatar_position = move(0, map_number, avatar_position)
+                elif commands[scrollp] == "b":
+                    avatar_position = move(1, map_number, avatar_position)
+                elif commands[scrollp] == "g":
+                    avatar_position = move(2, map_number, avatar_position)
                 else:
                     print("Can't use a conditional here")
                     ending()
                 scrollp = scroll[1][scrollp]
         else:
-            if coms[scrollp] == "r":
-                apos = move(0, mapn, apos)
-            elif coms[scrollp] == "b":
-                apos = move(1, mapn, apos)
-            elif coms[scrollp] == "g":
-                apos = move(2, mapn, apos)
+            if commands[scrollp] == "r":
+                avatar_position = move(0, map_number, avatar_position)
+            elif commands[scrollp] == "b":
+                avatar_position = move(1, map_number, avatar_position)
+            elif commands[scrollp] == "g":
+                avatar_position = move(2, map_number, avatar_position)
             else:
                 print("Can't use a conditional here")
                 ending()
             scrollp += 1
-        if crystalsc != 0:
-            if apos in crystalsp:
+        if crystals_count != 0:
+            if avatar_position in crystal_positions:
                 print("You picked up a crystal!")
                 crystals += 1
-                crystalsp.remove(apos)
-    if apos == ppos:
-        if crystals == crystalsc:
+                crystal_positions.remove(avatar_position)
+    if avatar_position == portal_position:
+        if crystals == crystals_count:
             print("You win the level!")
             ending()
     print("You lose, try again")
