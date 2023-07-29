@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-join all part files in a dir created by split.py
+Join all part files in a dir created by split.py
 """
 
 import os, sys
 
-readsize = 1024
+READSIZE = 1024
 
 
-def join(fromdir, tofile):
-    output = open(tofile, "wb")
-    parts = os.listdir(fromdir)
+def join(from_dir, to_file):
+    output = open(to_file, "wb")
+    parts = os.listdir(from_dir)
     parts.sort()
-    for filename in parts:
-        filepath = os.path.join(fromdir, filename)
-        fileobj = open(filepath, "rb")
+    for file_name in parts:
+        file_path = os.path.join(from_dir, file_name)
+        file = open(file_path, "rb")
         while True:
-            filebytes = fileobj.read(readsize)
-            if not filebytes:
+            file_bytes = file.read(READSIZE)
+            if not file_bytes:
                 break
-            output.write(filebytes)
-        fileobj.close()
+            output.write(file_bytes)
+        file.close()
     output.close()
 
 
@@ -30,19 +30,19 @@ if __name__ == "__main__":
     else:
         if len(sys.argv) != 3:
             interactive = True
-            fromdir = input("Directory containing part files? ")
-            tofile = input("Name of file to be recreated? ")
+            from_dir = input("Directory containing part files? ")
+            to_file = input("Name of file to be recreated? ")
         else:
             interactive = False
-            fromdir, tofile = sys.argv[1:]
-        absfrom, absto = map(os.path.abspath, [fromdir, tofile])
-        print("Joining", absfrom, "to make", absto)
+            from_dir, to_file = sys.argv[1:]
+        from_abs, to_abs = map(os.path.abspath, [from_dir, to_file])
+        print("Joining", from_abs, "to make", to_abs)
         try:
-            join(fromdir, tofile)
+            join(from_dir, to_file)
         except:
             print("Error joining files:")
             print(sys.exc_info()[0], sys.exc_info()[1])
         else:
-            print("Join complete: see", absto)
+            print("Join complete: see", to_abs)
         if interactive:
             input("Press ENTER key")
