@@ -337,9 +337,9 @@ def mapimage(map):
         print("           \033[31m/_\ \033[0m ")
 
 
-def move(color, map_number, avatar_position):
+def move(color, map, avatar_position):
     try:
-        new_position = map_number[avatar_position][color]
+        new_position = map[avatar_position][color]
         print("Moving from %d to %d" % (avatar_position, new_position))
         return position
     except TypeError:
@@ -749,7 +749,7 @@ def game(level_number="NaN"):
             print("Not a level")
             ending()
         level = levels[int(level_number) - 1]
-    map_number = maps[level[0]]
+    map = maps[level[0]]
     scroll = scrolls[level[1]]
     avatar_position = level[2]
     portal_position = level[3]
@@ -855,7 +855,7 @@ def game(level_number="NaN"):
                         scrollp = scroll[1][scrollp][1]
                         continue
                 elif commands[scrollp] == "o":
-                    if map_number[avatar_position][3] == 2:
+                    if map[avatar_position][3] == 2:
                         print("This is an orange spot!")
                         scrollp = scroll[1][scrollp][0]
                         continue
@@ -864,7 +864,7 @@ def game(level_number="NaN"):
                         scrollp = scroll[1][scrollp][1]
                         continue
                 elif commands[scrollp] == "p":
-                    if map_number[avatar_position][3] == 1:
+                    if map[avatar_position][3] == 1:
                         print("This is a purple spot!")
                         scrollp = scroll[1][scrollp][0]
                         continue
@@ -875,22 +875,22 @@ def game(level_number="NaN"):
             else:
                 # else run command and then move scrollp to new destination
                 if commands[scrollp] == "r":
-                    avatar_position = move(0, map_number, avatar_position)
+                    avatar_position = move(0, map, avatar_position)
                 elif commands[scrollp] == "b":
-                    avatar_position = move(1, map_number, avatar_position)
+                    avatar_position = move(1, map, avatar_position)
                 elif commands[scrollp] == "g":
-                    avatar_position = move(2, map_number, avatar_position)
+                    avatar_position = move(2, map, avatar_position)
                 else:
                     print("Can't use a conditional here")
                     ending()
                 scrollp = scroll[1][scrollp]
         else:
             if commands[scrollp] == "r":
-                avatar_position = move(0, map_number, avatar_position)
+                avatar_position = move(0, map, avatar_position)
             elif commands[scrollp] == "b":
-                avatar_position = move(1, map_number, avatar_position)
+                avatar_position = move(1, map, avatar_position)
             elif commands[scrollp] == "g":
-                avatar_position = move(2, map_number, avatar_position)
+                avatar_position = move(2, map, avatar_position)
             else:
                 print("Can't use a conditional here")
                 ending()
