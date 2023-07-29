@@ -1,35 +1,36 @@
 #!/usr/bin/env python3
 """
-split a file into a set of parts
+Split a file into a set of parts
+Use join.py to re-assemble the file
 """
 
 import os, sys
 
-kilobytes = 1024
-megabytes = kilobytes * 1000
-chunksize = int(1.4 * megabytes)
+KILOBYTES = 1024
+MEGABYTES = 1000 * KILOBYTES
+CHUNKSIZE = int(1.4 * MEGABYTES)
 
 
-def split(fromfile, todir, chunksize=chunksize):
-    if not os.path.exists(todir):
-        os.mkdir(todir)
+def split(from_file, to_dir, chunksize=CHUNKSIZE):
+    if not os.path.exists(to_dir):
+        os.mkdir(to_dir)
     else:
-        for fname in os.listdir(todir):
-            os.remove(os.path.join(todir, fname))
-    partnum = 0
-    inp = open(fromfile, "rb")
+        for file_name in os.listdir(to_dir):
+            os.remove(os.path.join(to_dir, file_name))
+    part_number = 0
+    from_file_obj = open(from_file, "rb")
     while True:
-        chunk = inp.read(chunksize)
+        chunk = from_file_obj.read(chunksize)
         if not chunk:
             break
-        partnum += 1
-        filename = os.path.join(todir, ("part%04d" % partnum))
-        fileobj = open(filename, "wb")
-        fileobj.write(chunk)
-        fileobj.close()
-    inp.close()
-    assert partnum <= 9999
-    return partnum
+        part_number += 1
+        file_name = os.path.join(to_dir, ("part%04d" % part_number))
+        to_file = open(file_name, "wb")
+        to_file.write(chunk)
+        to_file.close()
+    from_file_obj.close()
+    assert part_number <= 9999
+    return part_number
 
 
 if __name__ == "__main__":
@@ -38,21 +39,21 @@ if __name__ == "__main__":
     else:
         if len(sys.argv) < 3:
             interactive = True
-            fromfile = input("File to be split? ")
-            todir = input("Directory to store part files? ")
+            from_file = input("File to be split? ")
+            to_dir = input("Directory to store part files? ")
         else:
             interactive = False
-            fromfile, todir = sys.argv[1:3]
+            from_file, to_dir = sys.argv[1:3]
             if len(sys.argv) == 4:
                 chunksize = int(sys.argv[3])
-        absfrom, absto = map(os.path.abspath, [fromfile, todir])
-        print("Splitting", absfrom, "to", absto, "by", chunksize)
+        from_abs, to_abs = map(os.path.abspath, [from_file, to_dir])
+        print("Splitting", from_abs, "to", to_abs, "by", chunksize)
         try:
-            parts = split(fromfile, todir, chunksize)
+            parts = split(from_file, to_dir, chunksize)
         except:
             print("Error during split:")
             print(sys.exc_info()[0], sys.exc_info()[1])
         else:
-            print("Split finished:", parts, "parts are in", absto)
+            print("Split finished:", parts, "parts are in", to_abs)
         if interactive:
             input("Press ENTER key")
