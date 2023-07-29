@@ -111,9 +111,11 @@ def ending():
     play_again = input("Would you like to play again? ")
     if not play_again or play_again[0].lower() != "y":
         sys.exit(2)
+
     level = input("What level would you like to play? ")
     while not level.isdigit():
         level = input("What level would you like to play? ")
+
     game(level)
 
 
@@ -749,6 +751,7 @@ def game(level_number="NaN"):
             print("Not a level")
             ending()
         level = levels[int(level_number) - 1]
+
     map = maps[level[0]]
     scroll = scrolls[level[1]]
     avatar_position = level[2]
@@ -760,6 +763,7 @@ def game(level_number="NaN"):
         crystals_count = 0
     modifier_tokens = level[5]
     commands_available = level[6]
+
     os.system("clear")
     print("You are playing on map %d with scroll %d\n" % (level[0] + 1, level[1] + 1))
     mapimage(level[0])
@@ -770,9 +774,11 @@ def game(level_number="NaN"):
         "You have %d reds, %d blues, and %d greens" % (commands_available[0], commands_available[1], commands_available[2])
     )
     scrollimage(level[1])
+
     commands = input("Please input the order of tokens (rbg123456op): ")
     while len(commands) != scroll[0]:
         commands = input("Please input the order of tokens (rbg123456op): ")
+
     # Ensure that the input is valid given tokens in play
     if commands.count("r") != commands_available[0]:
         print("Not a valid command sequence")
@@ -788,18 +794,22 @@ def game(level_number="NaN"):
             if commands.count(str(token)) != 1:
                 print("Not a valid command sequence")
                 ending()
+
     # begin level
     scrollp = 0
     crystals = 0
     rotation = 0
+
     while scrollp < scroll[0] and rotation < 80:
         rotation += 1
+
         if scrollp in scroll[1]:
             if isinstance(scroll[1][scrollp], tuple):
                 # Ensure conditional in this position of commands and then test
                 if commands[scrollp] not in "123456op":
                     print("There should be a conditional at " + str(scrollp))
                     ending()
+
                 if commands[scrollp] == "1":
                     if crystals == 1:
                         print("You have 1 crystal!")
@@ -895,15 +905,18 @@ def game(level_number="NaN"):
                 print("Can't use a conditional here")
                 ending()
             scrollp += 1
+
         if crystals_count != 0:
             if avatar_position in crystal_positions:
                 print("You picked up a crystal!")
                 crystals += 1
                 crystal_positions.remove(avatar_position)
+
     if avatar_position == portal_position:
         if crystals == crystals_count:
             print("You win the level!")
             ending()
+
     print("You lose, try again")
     ending()
 
