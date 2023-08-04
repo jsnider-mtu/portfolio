@@ -767,11 +767,15 @@ def game(level_number="NaN"):
     os.system("clear")
     print("You are playing on map %d with scroll %d\n" % (level[0] + 1, level[1] + 1))
     mapimage(level[0])
-    print("\nYou are starting at %d and the portal is at %d\n" % (avatar_position, portal_position))
+    print(
+        "\nYou are starting at %d and the portal is at %d\n"
+        % (avatar_position, portal_position)
+    )
     print("There are crystals in these locations: " + str(crystal_positions))
     print("You have these mods: " + str(modifier_tokens))
     print(
-        "You have %d reds, %d blues, and %d greens" % (commands_available[0], commands_available[1], commands_available[2])
+        "You have %d reds, %d blues, and %d greens"
+        % (commands_available[0], commands_available[1], commands_available[2])
     )
     scrollimage(level[1])
 

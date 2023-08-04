@@ -219,4 +219,3 @@ resource "aws_iam_policy" "alb_ingress_controller_policy" {
 }
 POLICY
 }
-

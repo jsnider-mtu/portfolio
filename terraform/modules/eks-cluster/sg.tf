@@ -125,4 +125,3 @@ resource "aws_security_group_rule" "node_allow_ssh" {
   to_port           = 22
   type              = "ingress"
 }
-

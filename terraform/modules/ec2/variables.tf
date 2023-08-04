@@ -122,4 +122,3 @@ variable "iam_instance_profile" {
   default     = ""
   description = "(optional) The IAM Instance Profile to launch the instance with. Specified as the name of the Instance Profile."
 }
-

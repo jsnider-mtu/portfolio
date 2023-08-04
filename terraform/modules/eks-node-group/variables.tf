@@ -201,4 +201,3 @@ variable "max_unavailable_percentage" {
   description = "Desired max percentage of unavailable worker nodes during node group update."
   default     = 50
 }
-

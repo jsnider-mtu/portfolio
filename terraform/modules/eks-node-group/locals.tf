@@ -53,4 +53,3 @@ locals {
     "BOTTLEROCKET" : format(local.ami_format["BOTTLEROCKET"], local.ami_kube_version, local.arch_label_map[var.ami_type], local.ami_version_regex[local.ami_kind]),
   }
 }
-

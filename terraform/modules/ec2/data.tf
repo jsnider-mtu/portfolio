@@ -12,4 +12,3 @@ data "aws_subnet_ids" "subnet" {
     Component   = var.component
   }
 }
-

@@ -4,4 +4,3 @@ module "eks_cluster_label" {
   environment = var.env
   name        = var.name
 }
-

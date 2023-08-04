@@ -181,4 +181,3 @@ resource "null_resource" "scale_up_autoscaler" {
     on_failure  = continue
   }
 }
-

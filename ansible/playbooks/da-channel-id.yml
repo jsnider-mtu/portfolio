@@ -14,6 +14,6 @@
         regexp: '^(distribution.adapter.supported.channelIds(?!.*\b{{ channelID }}\b).*)$'
         backrefs: yes
         line: '\1,{{ channelID }}'
-        
+
     - name: Start distribution-adapter
       service: name=distribution-adapter state=started

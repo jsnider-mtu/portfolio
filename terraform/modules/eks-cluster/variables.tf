@@ -95,4 +95,3 @@ variable "secrets_kms_arn" {
   type    = list(string)
   description = "KMS key ARN for encrypting secrets (only one arn in list)"
 }
-

@@ -45,4 +45,3 @@ variable "is_enabled" {
   default = true
   description = "Specifies whether the key is enabled."
 }
-

@@ -378,4 +378,3 @@ commands:
           name: Delete pod
           command: helm delete ${POD_NAME} || exit 0
           when: always
-

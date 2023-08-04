@@ -5,4 +5,3 @@ output "full_bucket_name" {
 output "full_bucket_arn" {
   value = concat(aws_s3_bucket.this_bucket.*.arn, [""])[0]
 }
-

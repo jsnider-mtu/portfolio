@@ -42,4 +42,3 @@ output "cluster_kms_key_arn" {
   value       = module.kms.kms_key_arn
   description = "For use in cluster node EBS drive encryption"
 }
-
