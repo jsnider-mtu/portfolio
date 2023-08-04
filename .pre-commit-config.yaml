@@ -13,3 +13,7 @@ repos:
     rev: 23.7.0
     hooks:
     -   id: black
+-   repo: https://github.com/lovesegfault/beautysh
+    rev: v6.2.1
+    hooks:
+    -   id: beautysh
