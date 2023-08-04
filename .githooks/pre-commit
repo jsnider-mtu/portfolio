@@ -4,20 +4,20 @@ exec < /dev/tty
 exec 1>&2
 diff=$(black --diff python)
 if [ ! -z "$diff" ]; then
-  cat <<EOF
+    cat <<EOF
 $(echo -e "$diff")
 
 These changes will be applied before the commit!
 
 Press ENTER to continue or CTRL-C to abort:
 EOF
-  proceed=false
-  while true; do
-    read -rsn1 proceed
-    if [ -z "$proceed" ]; then
-      black python
-      git add python
-      break
-    fi
-  done
+    proceed=false
+    while true; do
+        read -rsn1 proceed
+        if [ -z "$proceed" ]; then
+            black python
+            git add python
+            break
+        fi
+    done
 fi
