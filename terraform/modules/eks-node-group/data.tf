@@ -36,4 +36,3 @@ data "aws_eks_cluster" "eks_cluster" {
   count = var.enable ? 1 : 0
   name  = var.cluster_name
 }
-

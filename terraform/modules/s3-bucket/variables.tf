@@ -113,4 +113,3 @@ variable "create_bucket" {
 variable "aws_s3_kms_key_arn" {
   type = string
 }
-

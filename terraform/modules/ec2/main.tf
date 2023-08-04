@@ -78,4 +78,3 @@ resource "aws_network_interface" "nic" {
   security_groups = var.security_groups
   tags            = module.label_nic.tags
 }
-

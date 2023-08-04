@@ -115,4 +115,3 @@ resource "aws_s3_bucket_public_access_block" "this_access_block" {
   block_public_policy     = var.block_public_policy
   restrict_public_buckets = var.restrict_public_buckets
 }
-

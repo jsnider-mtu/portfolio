@@ -38,4 +38,3 @@ data "aws_eks_cluster" "eks_cluster" {
 }
 
 data "aws_region" "current" {}
-

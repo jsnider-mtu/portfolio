@@ -83,10 +83,9 @@ module "kms_label" {
 module "kms" {
   source = "../kms"
   enable = var.enable
-  
+
   name   = var.name
   policy = data.aws_iam_policy_document.kms_policy.json
 
   tags_context = module.eks_cluster_label.context
 }
-

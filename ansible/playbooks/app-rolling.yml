@@ -6,7 +6,7 @@
 
   tasks:
 
-    - name: Stop Tomcat 7 
+    - name: Stop Tomcat 7
       action: service name=tomcat7 state=stopped
       ignore_errors: yes
 

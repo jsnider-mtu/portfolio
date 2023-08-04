@@ -57,4 +57,3 @@ resource "aws_eks_addon" "core_dns" {
   addon_name    = "coredns"
   addon_version = var.coredns_version
 }
-
