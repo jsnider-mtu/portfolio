@@ -9,16 +9,37 @@
 # --WARNING--
 ###
 
+function warningmsg() {
+    echo
+    echo -e '\033[31;1m--WARNING--'
+    echo 'ONLY USE WITH TRUSTED FILES AND WEBSITES!'
+    echo 'SUPER-DUPER INSECURE!!!'
+    echo -e '--WARNING--\033[0m'
+    echo
+}
+
 # Show usage if run without arguments, too many arguments,
 # or when asked for help
 if [[ ($# -ne 1 && $# -ne 2) || $1 == '--help' ]]; then
     echo 'Usage: fetch "URL" [dest-dir]'
+    warningmsg
     exit 0
 fi
 
 # What is "fetch"?
 if [ $1 == '--mean' ]; then
     open "https://www.youtube.com/watch?v=Pubd-spHN-0"
+    exit 0
+fi
+
+# Warn the user and get confirmation before starting
+WARNPROMPT=`echo -e '\033[32mSure you want to continue? (y|Y to continue): \033[0m'`
+warningmsg
+read -t 30 -p "$WARNPROMPT"
+if [[ $REPLY =~ ^[yY] ]]; then
+    echo -e "\nYou asked for it..\n"
+else
+    echo -e "\nAborting..\n"
     exit 0
 fi
 
