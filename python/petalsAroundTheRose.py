@@ -15,7 +15,7 @@ usage = "Usage: python3 petalsAroundTheRose.py [-n|--bastard-mode]"
 parser = OptionParser(usage=usage)
 parser.add_option("-n", "--bastard-mode", action="store_true", dest="bastard")
 parser.set_defaults(bastard=False)
-(options, args) = parser.parse_args()
+options, args = parser.parse_args()
 
 bone1 = [
     "|         |",
